@@ -7,7 +7,6 @@ float degtorad(float deg) {
   return deg * PI / 180.0f;
 }
 
-
 // BNO055関連
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -30,8 +29,16 @@ uint8_t read8(uint8_t reg) {
   I2C_BNO.requestFrom((uint8_t)BNO055_ADDR, (uint8_t)1);
   return I2C_BNO.available() ? I2C_BNO.read() : 0;
 }
+void BNO_init() {
+  write8(0x3D, 0x00); // Config mode
+  delay(25);
+  write8(0x3F, 0x20); // Reset
+  delay(700);
+  write8(0x3D, 0x0C); // NDOF mode
+  delay(25);
+}
 // 角度取得関数（yawを-180〜180で返す）
-float get_yaw() {
+float BNO_get_yaw() {
   uint8_t l = read8(0x1A); // EULER_H_LSB
   uint8_t h = read8(0x1B); // EULER_H_MSB
   
@@ -125,43 +132,82 @@ void Mspin(float spn_rate){
 }
 
 //姿勢(PID)制御関連
-#define P_GAIN 6.0f
-#define I_GAIN 3.0f
-#define D_GAIN 0.4f
+#define P_GAIN 4.0f
+#define I_GAIN 1.0f
+#define D_GAIN 1.0f
+#define I_LIMIT 0.2f       // アンチワインドアップ（積分の最大値）
+#define OUTPUT_LIMIT 1.0f  // 出力の最大値（M_MAXに対する割合）
 float target_angle = 0.0f;
-float current_angle = 0.0f;
-float pretime = 0.0f;
-float dt = 0.0f;
-float P = 0.0f;
-float I = 0.0f; 
-float D = 0.0f;
-float preP = 0.0f;
+float pre_error = 0.0f;
+float integral = 0.0f;
+unsigned long last_micros = 0; // micros()管理用
+// 角度を -180 〜 180 の範囲に正規化する関数
+float normalize_angle(float angle) {
+    while (angle > 180.0f)  angle -= 360.0f;
+    while (angle < -180.0f) angle += 360.0f;
+    return angle;
+}
+
+HardwareSerial lineSerial(PA3, PA2);
+// シリアル通信関連
+
+
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
+  //delay(2000);
   Serial.println("starting...");
   for (int i = 0; i < 8; i++) {
     pinMode(motor_pins[i], OUTPUT);
   }
 
   I2C_BNO.begin();
-  // 初期化シーケンス
-  write8(0x3D, 0x00); // Config mode
-  delay(25);
-  write8(0x3F, 0x20); // Reset
-  delay(700);
-  write8(0x3D, 0x0C); // NDOF mode
-  delay(25);
+  BNO_init();
   Serial.println("BNO055 initialized.");
   Mstop();
 }
 
-void loop() { 
-  float current_angle = get_yaw();
-  
-  Serial.print("Yaw: ");
-  Serial.println(current_angle);
+void loop() {
+  // --- 1. dt（前回からの経過時間）の計算 ---
+    unsigned long current_micros = micros();
+    float dt = (float)(current_micros - last_micros) / 1000000.0f;
+    
+    // 初回実行時やdtが異常に小さい場合のガード
+    if (dt <= 0.0001f) { 
+        delay(1);
+        return;
+    }
 
-  delay(100);
+    // --- 2. 角度取得とエラー計算 ---
+    float current_yaw = BNO_get_yaw();
+    // 最短距離で目標を向くように補正
+    float error = normalize_angle(target_angle - current_yaw) / 180.0f;
+
+    // --- 3. PID計算 ---
+    // P項
+    float p_out = P_GAIN * error;
+
+    // I項（アンチワインドアップ付き）
+    integral += error * dt;
+    if (integral > I_LIMIT)  integral = I_LIMIT;
+    else if (integral < -I_LIMIT) integral = -I_LIMIT;
+    float i_out = I_GAIN * integral;
+
+    // D項
+    float d_out = D_GAIN * (error - pre_error) / dt;
+
+    // 合計出力
+    float sisei_output = p_out + i_out + d_out;
+
+    // --- 4. 出力制限と実行 ---
+    if (sisei_output > OUTPUT_LIMIT)  sisei_output = OUTPUT_LIMIT;
+    else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
+
+    Mspin(sisei_output);
+
+    // --- 5. 次のループへの準備 ---
+    pre_error = error;
+    last_micros = current_micros;
+
+    delay(1); // 最小限の待機
 }
