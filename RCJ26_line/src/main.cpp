@@ -10,7 +10,7 @@ int line_data[12];
 
 void setup() {
   Serial.begin(115200);
-
+  delay(5000);
   // 2. 配列を使って一括でピンモードを設定
   for (int i = 0; i < 12; i++) {
     pinMode(line_pins[i], INPUT);
@@ -29,7 +29,6 @@ void loop() {
     Serial.print(":");
     Serial.print(line_data[i]);
     Serial.print("  ");
-    if (i == 5) Serial.print("| "); 
   }
   Serial.println("");
 
