@@ -7,21 +7,33 @@ float degtorad(float deg) {
   return deg * PI / 180.0f;
 }
 
+// モードの定義
+enum RobotMode {
+  MODE_READY,      // 準備中
+  MODE_NORMAL,    // 通常走行
+  MODE_DEBUG,     // デバッグモード
+  MODE_STOP       // 停止
+};
+
+// デバッグモードの定義
+enum DebugMode {
+  DEBUG_BALL,
+  DEBUG_LINE,
+  DEBUG_BNO,
+};
+
 // BNO055関連
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #define BNO055_ADDR 0x28
-// I2Cインスタンスの作成 (PB7: SDA, PB6: SCL)
 TwoWire I2C_BNO(PB7, PB6);
-// 低レベル書き込み関数
 void write8(uint8_t reg, uint8_t val) {
   I2C_BNO.beginTransmission(BNO055_ADDR);
   I2C_BNO.write(reg);
   I2C_BNO.write(val);
   I2C_BNO.endTransmission();
 }
-// 低レベル読み込み関数
 uint8_t read8(uint8_t reg) {
   I2C_BNO.beginTransmission(BNO055_ADDR);
   I2C_BNO.write(reg);
@@ -29,6 +41,7 @@ uint8_t read8(uint8_t reg) {
   I2C_BNO.requestFrom((uint8_t)BNO055_ADDR, (uint8_t)1);
   return I2C_BNO.available() ? I2C_BNO.read() : 0;
 }
+// BNO055初期化関数
 void BNO_init() {
   write8(0x3D, 0x00); // Config mode
   delay(25);
@@ -148,9 +161,50 @@ float normalize_angle(float angle) {
     return angle;
 }
 
-HardwareSerial lineSerial(PA3, PA2);
-// シリアル通信関連
+// ラインセンサー関連
+HardwareSerial lineSerial(PA3, PA2); // RX, TX
+// ラインマイコンから受信する関数
+uint16_t line_data = 0; // 最新の正しいデータを保持
+void receive_from_line() {
+  // 4バイト以上溜まっている間、パケットを探し続ける
+  while (lineSerial.available() >= 4) {
+    // 1. ヘッダー(0xAA)を探す
+    if (lineSerial.read() != 0xAA) {
+      continue; // 0xAAでないなら読み飛ばして次へ
+    }
 
+    // 2. ヘッダーが見つかったら残りを読み込む
+    uint8_t high = lineSerial.read();
+    uint8_t low  = lineSerial.read();
+    uint8_t checksum = lineSerial.read();
+
+    // 3. チェックサム確認
+    uint8_t calc_sum = (uint8_t)(0xAA + high + low);
+    if (calc_sum == checksum) {
+      // 正しいデータなら更新
+      line_data = (uint16_t)((high << 8) | low);
+    } else {
+      // エラーならこのパケットは捨てる（何もしない）
+    }
+  }
+}
+
+// デバッグ用にボールマイコンに送信する関数
+void send_to_ball(uint16_t data) {
+  // バイト分解する
+  uint8_t high = (data >> 8) & 0xFF; 
+  uint8_t low  = data & 0xFF;
+  uint8_t header = 0xAA;
+
+  // チェックサムを計算（ヘッダー + 上位 + 下位）
+  uint8_t checksum = (uint8_t)(header + high + low);
+
+  // まとめて送信
+  Serial.write(header);
+  Serial.write(high); 
+  Serial.write(low);
+  Serial.write(checksum);
+}
 
 
 void setup() {
@@ -167,47 +221,63 @@ void setup() {
   Mstop();
 }
 
+// 現在のモードを保持
+RobotMode currentMode = MODE_NORMAL; 
+
 void loop() {
-  // --- 1. dt（前回からの経過時間）の計算 ---
+    // --- 常に実行する処理 (センサー更新) ---
+    receive_from_line(); // ライン情報の受信
+    
+    // --- 1. dt（前回からの経過時間）の計算 ---
     unsigned long current_micros = micros();
     float dt = (float)(current_micros - last_micros) / 1000000.0f;
-    
-    // 初回実行時やdtが異常に小さい場合のガード
-    if (dt <= 0.0001f) { 
-        delay(1);
-        return;
-    }
+    if (dt <= 0.0001f) { delay(1); return; }
 
-    // --- 2. 角度取得とエラー計算 ---
+    // --- 2. 角度取得とPID計算（姿勢制御の計算のみ） ---
     float current_yaw = BNO_get_yaw();
-    // 最短距離で目標を向くように補正
     float error = normalize_angle(target_angle - current_yaw) / 180.0f;
-
-    // --- 3. PID計算 ---
-    // P項
     float p_out = P_GAIN * error;
-
-    // I項（アンチワインドアップ付き）
     integral += error * dt;
     if (integral > I_LIMIT)  integral = I_LIMIT;
     else if (integral < -I_LIMIT) integral = -I_LIMIT;
     float i_out = I_GAIN * integral;
-
-    // D項
     float d_out = D_GAIN * (error - pre_error) / dt;
-
-    // 合計出力
     float sisei_output = p_out + i_out + d_out;
-
-    // --- 4. 出力制限と実行 ---
     if (sisei_output > OUTPUT_LIMIT)  sisei_output = OUTPUT_LIMIT;
     else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
 
-    Mspin(sisei_output);
+    // --- 3. モード切替（ステートマシン） ---
+    switch (currentMode) {
+        case MODE_READY:
+            Mstop();
+            // 例: 何かボタンが押されたら NORMAL へ移行、などの処理
+            break;
 
-    // --- 5. 次のループへの準備 ---
+        case MODE_NORMAL:
+            // 今までの処理：姿勢制御を維持しながら、必要に応じて移動
+            // ここでは姿勢制御の回転(Mspin)のみ行っていますが、
+            // 本来はここに「ボールを追いかける」などの Mmove 処理が入ります。
+            Mspin(sisei_output); 
+            
+            // ラインを検知したらデバッグや停止に移行する例
+            if (line_data & (1 << 15)) {
+                // currentMode = MODE_STOP; // 必要に応じて切り替え
+            }
+            break;
+
+        case MODE_DEBUG:
+            // デバッグ用：センサー値をPCに送るだけ、など
+            send_to_ball(line_data);
+            Mstop();
+            break;
+
+        case MODE_STOP:
+            Mstop();
+            break;
+    }
+
+    // --- 4. 次のループへの準備 ---
     pre_error = error;
     last_micros = current_micros;
-
-    delay(1); // 最小限の待機
+    delay(1); 
 }

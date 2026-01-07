@@ -1,8 +1,8 @@
 #include <Arduino.h>
 
 const int line_TH[12] = {
-  700, 700, 700, 700, 700, 700,
-  700, 700, 700, 700, 700, 700
+  400, 450, 360, 530, 430, 330,
+  310, 420, 340, 310, 300, 390
 };
 
 // 1. 使用するピンを配列で定義
@@ -20,9 +20,7 @@ uint16_t line_data = 0;
 
 void print_analog_data() {
   for (int i = 0; i < 12; i++) {
-    Serial.print(i + 1);
-    Serial.print(":");
-    Serial.println(line_analog_data[i]);
+    Serial.print(line_analog_data[i]);
     Serial.print("  ");
   }
   Serial.println("");
@@ -39,7 +37,7 @@ void print_line_data() {
   Serial.println("");
 }
 
-// メインに送信する関数
+// メインに送信する関数(4byte:ヘッダー1byte + データ2byte + チェックサム1byte)
 void send_to_main(uint16_t data) {
   if (data & 0x7FFF) { 
     data |= (1 << 15); // いずれかのラインが反応していればビット15を立てる
@@ -94,5 +92,6 @@ void loop() {
   //print_analog_data();
   //print_line_data();
 
-  delay(200);
+  send_to_main(line_data);
+  delay(1);
 }
