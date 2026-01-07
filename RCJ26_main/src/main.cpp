@@ -150,6 +150,7 @@ void Mspin(float spn_rate){
 #define D_GAIN 1.0f
 #define I_LIMIT 0.2f       // アンチワインドアップ（積分の最大値）
 #define OUTPUT_LIMIT 1.0f  // 出力の最大値（M_MAXに対する割合）
+float current_yaw = 0.0f;  // 現在のヨー角(Global)
 float target_angle = 0.0f;
 float pre_error = 0.0f;
 float integral = 0.0f;
@@ -189,7 +190,9 @@ void receive_from_line() {
   }
 }
 
-// デバッグ用にボールマイコンに送信する関数
+
+HardwareSerial ballSerial(PC10, PC11); // TX, RX
+// デバッグ用にボールマイコンに送信する関数(BNO,ライン,モード変更)
 void send_to_ball(uint16_t data) {
   // バイト分解する
   uint8_t high = (data >> 8) & 0xFF; 
@@ -200,10 +203,39 @@ void send_to_ball(uint16_t data) {
   uint8_t checksum = (uint8_t)(header + high + low);
 
   // まとめて送信
-  Serial.write(header);
-  Serial.write(high); 
-  Serial.write(low);
-  Serial.write(checksum);
+  ballSerial.write(header);
+  ballSerial.write(high); 
+  ballSerial.write(low);
+  ballSerial.write(checksum);
+}
+
+//　ボールマイコンから受信する関数(ボールデータ)
+void receive_from_ball() {
+  // 4バイト以上溜まっている間、パケットを探し続ける
+  while (Serial.available() >= 4) {
+    // 1. ヘッダー(0xAA)を探す
+    if (Serial.read() != 0xAA) {
+      continue; // 0xAAでないなら読み飛ばして次へ
+    }
+
+    // 2. ヘッダーが見つかったら残りを読み込む
+    uint8_t high = Serial.read();
+    uint8_t low  = Serial.read();
+    uint8_t checksum = Serial.read();
+
+    // 3. チェックサム確認
+    uint8_t calc_sum = (uint8_t)(0xAA + high + low);
+    if (calc_sum == checksum) {
+      // 正しいデータなら更新
+      line_data = (uint16_t)((high << 8) | low);
+    } else {
+      // エラーならこのパケットは捨てる（何もしない）
+    }
+  }
+}
+
+uint16_t debug_convert_bno_data(){
+  current_yaw 
 }
 
 

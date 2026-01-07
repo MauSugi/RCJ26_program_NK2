@@ -1,4 +1,11 @@
 #include <Arduino.h>
+#include <math.h>
+float radtodeg(float rad) {
+  return rad * 180.0f / PI;
+}
+float degtorad(float deg) {
+  return deg * PI / 180.0f;
+}
 
 const int line_TH[12] = {
   400, 450, 360, 530, 430, 330,
@@ -18,6 +25,7 @@ int line_analog_data[12];
 //　ラインデータを２値化して格納する16ビットの変数(下位15ビット使用)
 uint16_t line_data = 0;
 
+// PCデバッグ用
 void print_analog_data() {
   for (int i = 0; i < 12; i++) {
     Serial.print(line_analog_data[i]);
@@ -25,7 +33,6 @@ void print_analog_data() {
   }
   Serial.println("");
 }
-
 void print_line_data() {
   for (int i = 0; i < 15; i++) {
     if (line_data & (1 << i)) {
