@@ -190,8 +190,7 @@ void receive_from_line() {
   }
 }
 
-
-HardwareSerial ballSerial(PC10, PC11); // TX, RX
+HardwareSerial ballSerial(PC11, PC10); // TX, RX
 // デバッグ用にボールマイコンに送信する関数(BNO,ライン,モード変更)
 void send_to_ball(uint16_t data) {
   // バイト分解する
@@ -210,6 +209,7 @@ void send_to_ball(uint16_t data) {
 }
 
 //　ボールマイコンから受信する関数(ボールデータ)
+/* 作成中
 void receive_from_ball() {
   // 4バイト以上溜まっている間、パケットを探し続ける
   while (Serial.available() >= 4) {
@@ -228,15 +228,9 @@ void receive_from_ball() {
     if (calc_sum == checksum) {
       // 正しいデータなら更新
       line_data = (uint16_t)((high << 8) | low);
-    } else {
-      // エラーならこのパケットは捨てる（何もしない）
     }
   }
-}
-
-uint16_t debug_convert_bno_data(){
-  current_yaw 
-}
+}*/
 
 
 void setup() {
@@ -254,18 +248,19 @@ void setup() {
 }
 
 // 現在のモードを保持
-RobotMode currentMode = MODE_NORMAL; 
+RobotMode currentMode = MODE_DEBUG; 
 
 void loop() {
-    // --- 常に実行する処理 (センサー更新) ---
+    // センサー更新
     receive_from_line(); // ライン情報の受信
+    //receive_from_ball(); // ボール情報の受信
     
-    // --- 1. dt（前回からの経過時間）の計算 ---
+    // 姿勢制御用の時間計測
     unsigned long current_micros = micros();
     float dt = (float)(current_micros - last_micros) / 1000000.0f;
     if (dt <= 0.0001f) { delay(1); return; }
 
-    // --- 2. 角度取得とPID計算（姿勢制御の計算のみ） ---
+    // 角度・PID制御計算
     float current_yaw = BNO_get_yaw();
     float error = normalize_angle(target_angle - current_yaw) / 180.0f;
     float p_out = P_GAIN * error;
@@ -278,37 +273,27 @@ void loop() {
     if (sisei_output > OUTPUT_LIMIT)  sisei_output = OUTPUT_LIMIT;
     else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
 
-    // --- 3. モード切替（ステートマシン） ---
     switch (currentMode) {
         case MODE_READY:
-            Mstop();
-            // 例: 何かボタンが押されたら NORMAL へ移行、などの処理
-            break;
-
+          // 準備中：特に動作なし
+          break;
         case MODE_NORMAL:
-            // 今までの処理：姿勢制御を維持しながら、必要に応じて移動
-            // ここでは姿勢制御の回転(Mspin)のみ行っていますが、
-            // 本来はここに「ボールを追いかける」などの Mmove 処理が入ります。
-            Mspin(sisei_output); 
-            
-            // ラインを検知したらデバッグや停止に移行する例
-            if (line_data & (1 << 15)) {
-                // currentMode = MODE_STOP; // 必要に応じて切り替え
-            }
-            break;
-
+          // 試合モード
+          break;
         case MODE_DEBUG:
-            // デバッグ用：センサー値をPCに送るだけ、など
-            send_to_ball(line_data);
-            Mstop();
-            break;
-
+          // 作成中
+          send_to_ball(line_data);
+          //16ビット目が立っているならボールあり
+          //if (line_data & 0x8000) {
+              // ボールあり
+          //}
+          //Mstop();
+          break;
         case MODE_STOP:
-            Mstop();
-            break;
+          // 後で作る
+          break;
     }
 
-    // --- 4. 次のループへの準備 ---
     pre_error = error;
     last_micros = current_micros;
     delay(1); 

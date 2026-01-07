@@ -23,8 +23,8 @@ void print_IR_data() {
 }
 
 float IR_angle = NAN; // ボールの角度(-180 ~ 180)を格納するグローバル変数
-float IR_distance = 0; // ボールまでの距離を格納するグローバル変数
-// ボールの角度(-180 ~ 180)を計算して変数を更新する関数
+int IR_distance = 0; // ボールまでの距離を格納するグローバル変数
+// 角度(-180 ~ 180)、距離(0～)を計算して変数を更新する関数
 void calc_IR_data() {
   float sum = 0;
   float x = 0;
@@ -46,11 +46,13 @@ void calc_IR_data() {
   // ボールが遠すぎるか存在しないとき
   if (sum < 1200) {
     IR_angle = NAN; // NAN を返す
+    IR_distance = sum;
     return;
   }
 
   // atan2 は標準で -PI 〜 PI (-180 〜 180度) を返す
   IR_angle = degrees(atan2(y, x));
+  IR_distance = sum;
 }
 
 // NeoPixel関連
@@ -86,6 +88,58 @@ void debug_neopixel(float angle, int color) {
   pixels.show();  // 設定したデータを実際にLEDに送信
 }
 
+// ラインセンサーのNeoPixel表示関数（複数対応）
+void debug_line_neopixel(uint16_t line_data) {
+  pixels.clear(); // 全データを一旦「オフ」に設定
+
+  for (int i = 0; i < 12; i++) {
+    if (line_data & (1 << i)) {
+      pixels.setPixelColor(i, pixels.Color(30, 30, 30)); // 白色で点灯
+    }
+  }
+
+  pixels.show();  // 設定したデータを実際にLEDに送信
+}
+
+// シリアル通信関連
+uint16_t line_data = 0; // ラインセンサー情報保存用変数
+
+HardwareSerial ballSerial(PA3, PA2); // RX, TX
+void receive_from_main() {
+  while (ballSerial.available() >= 4) {
+    uint8_t header = ballSerial.read();
+
+    if (header != 0xAA && header != 0xBB) {
+      continue; // 不明なヘッダーなら無視
+    }
+
+    uint8_t high = ballSerial.read();
+    uint8_t low  = ballSerial.read();
+    uint8_t checksum = ballSerial.read();
+
+    uint8_t calc_sum = (uint8_t)(header + high + low);
+    if (calc_sum != checksum) {
+      continue; // チェックサムエラーならこのパケットは無視
+    }
+
+    // 5. ヘッダーの種類に応じて格納先を変える
+    uint16_t combined_val = (uint16_t)((high << 8) | low);
+
+    switch (header) {
+      case 0xAA: // ラインセンサーのデータ
+        line_data = combined_val;
+        break;
+
+      case 0xBB: // ボールセンサーのデータ
+        // 今回は使わない
+        break;
+
+      default:
+        break;
+    }
+  }
+}
+
 void setup() {
   //Serial.begin(115200);
 
@@ -99,9 +153,14 @@ void setup() {
 }
 
 void loop() {
-  calc_IR_data();
-  //Serial.println(IR_angle);
-  debug_neopixel(IR_angle, 1);
-  delay(10);
+  uint16_t old_line_data = line_data;
+  receive_from_main();
+
+  // データが変化したときだけLEDを更新
+  if (line_data != old_line_data) {
+    debug_line_neopixel(line_data);
+  }
+  delay(1);
 }
+
 
