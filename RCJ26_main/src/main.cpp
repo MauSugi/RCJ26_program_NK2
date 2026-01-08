@@ -26,54 +26,6 @@ enum DebugMode {
 RobotMode currentMode = MODE_DEBUG; 
 DebugMode currentDebug = DEBUG_BNO;
 
-//ボタンピンの定義
-const int button_pins[4]{
-  PB0, PB1, PB2, PB3
-};
-// ボタン管理用のグローバル変数
-bool btn_now[4] = {false, false, false, false};      // 今押されているか（生データ）
-bool btn_pressed[4] = {false, false, false, false};  // 押された瞬間だけtrue
-void update_buttons() {
-    static bool last_btn_state[4] = {false, false, false, false};
-    static unsigned long last_debounce[4] = {0, 0, 0, 0};
-
-    for (int i = 0; i < 4; i++) {
-        bool raw = digitalRead(button_pins[i]); // 抵抗の接続に合わせてHIGH/LOW調整
-        btn_pressed[i] = false; // 毎ループリセット
-
-        if (millis() - last_debounce[i] > 20) { // 20msチャタリング防止
-            if (raw != last_btn_state[i]) {
-                if (raw == HIGH) { // 立ち上がり（押された瞬間）
-                    btn_pressed[i] = true;
-                }
-                last_btn_state[i] = raw;
-                last_debounce[i] = millis();
-            }
-        }
-        btn_now[i] = last_btn_state[i];
-    }
-}
-// モード切り替えロジック
-void handle_mode_logic() {
-  // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
-  if (btn_pressed[0]) {
-    currentDebug = (DebugMode)((currentDebug + 1) % 3);
-    // モードが変わったことをすぐに通知
-    send_to_ball_system_status();
-  }
-
-  // ボタン1：全体モードの切り替え (READY -> NORMAL -> DEBUG -> READY)
-  /*
-  if (btn_pressed[1]) {
-    if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
-    else if (currentMode == MODE_NORMAL) currentMode = MODE_DEBUG;
-    else currentMode = MODE_READY;
-    
-    // モードが変わったことをすぐに通知
-    send_to_ball_system_status();
-  }*/
-}
-
 // BNO055関連
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -317,6 +269,55 @@ void receive_from_ball() {
   }
 }*/
 
+//ボタンピンの定義
+const int button_pins[4]{
+  PB0, PB1, PB2, PB3
+};
+// ボタン管理用のグローバル変数
+bool btn_now[4] = {false, false, false, false};      // 今押されているか（生データ）
+bool btn_pressed[4] = {false, false, false, false};  // 押された瞬間だけtrue
+void update_buttons() {
+    static bool last_btn_state[4] = {false, false, false, false};
+    static unsigned long last_debounce[4] = {0, 0, 0, 0};
+
+    for (int i = 0; i < 4; i++) {
+        bool raw = digitalRead(button_pins[i]); // 抵抗の接続に合わせてHIGH/LOW調整
+        btn_pressed[i] = false; // 毎ループリセット
+
+        if (millis() - last_debounce[i] > 20) { // 20msチャタリング防止
+            if (raw != last_btn_state[i]) {
+                if (raw == HIGH) { // 立ち上がり（押された瞬間）
+                    btn_pressed[i] = true;
+                }
+                last_btn_state[i] = raw;
+                last_debounce[i] = millis();
+            }
+        }
+        btn_now[i] = last_btn_state[i];
+    }
+}
+// モード切り替えロジック
+void handle_mode_logic() {
+  // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
+  if (btn_pressed[0]) {
+    currentDebug = (DebugMode)((currentDebug + 1) % 3);
+    // モードが変わったことをすぐに通知
+    send_to_ball_system_status();
+  }
+
+  // ボタン1：全体モードの切り替え (READY -> NORMAL -> DEBUG -> READY)
+  /*
+  if (btn_pressed[1]) {
+    if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
+    else if (currentMode == MODE_NORMAL) currentMode = MODE_DEBUG;
+    else currentMode = MODE_READY;
+    
+    // モードが変わったことをすぐに通知
+    send_to_ball_system_status();
+  }*/
+}
+
+
 // PCデバッグ用
 void print_line_data() {
   for (int i = 0; i < 15; i++) {
@@ -329,6 +330,8 @@ void print_line_data() {
   Serial.println("");
 }
 
+
+// メインストリーム
 void setup() {
   Serial.begin(115200);
   lineSerial.begin(115200);
@@ -347,8 +350,6 @@ void setup() {
   //Serial.println("BNO055 initialized.");
   Mstop();
 }
-
-
 
 void loop() {
     // センサー更新
