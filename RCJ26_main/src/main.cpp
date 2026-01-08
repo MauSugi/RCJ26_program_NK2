@@ -22,6 +22,10 @@ enum DebugMode {
   DEBUG_BNO,
 };
 
+// 現在のモードを保持
+RobotMode currentMode = MODE_DEBUG; 
+DebugMode currentDebug = DEBUG_BNO;
+
 //ボタンピンの定義
 const int button_pins[4]{
   PB0, PB1, PB2, PB3
@@ -49,20 +53,25 @@ void update_buttons() {
         btn_now[i] = last_btn_state[i];
     }
 }
-// モード切り替え
+// モード切り替えロジック
 void handle_mode_logic() {
-    // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
-    if (btn_pressed[0]) {
-        currentDebug = (DebugMode)((currentDebug + 1) % 3);
-    }
+  // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
+  if (btn_pressed[0]) {
+    currentDebug = (DebugMode)((currentDebug + 1) % 3);
+    // モードが変わったことをすぐに通知
+    send_to_ball_system_status();
+  }
 
-    // ボタン1：全体モードの切り替え (READY <-> NORMAL <-> DEBUG)
-    /*
-    if (btn_pressed[1]) {
-        if (currentMode == MODE_DEBUG) currentMode = MODE_READY;
-        else if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
-        else currentMode = MODE_NORMAL; // 必要に応じて調整
-    }*/
+  // ボタン1：全体モードの切り替え (READY -> NORMAL -> DEBUG -> READY)
+  /*
+  if (btn_pressed[1]) {
+    if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
+    else if (currentMode == MODE_NORMAL) currentMode = MODE_DEBUG;
+    else currentMode = MODE_READY;
+    
+    // モードが変わったことをすぐに通知
+    send_to_ball_system_status();
+  }*/
 }
 
 // BNO055関連
@@ -250,7 +259,7 @@ void send_to_ball_linedata(uint16_t data) {
 }
 
 // 角度（float）を2バイトに圧縮してボールマイコンへ送信する関数
-void send_to_ball_angle(float angle) {
+void send_to_ball_BNOdata(float angle) {
   // -180.00 ～ 180.00 を -18000 ～ 18000 の整数に変換
   // これにより小数点第2位まで保持したまま16bitに収まる
   int16_t flat_angle = (int16_t)(angle * 100.0f);
@@ -268,6 +277,18 @@ void send_to_ball_angle(float angle) {
   // まとめて送信
   ballSerial.write(header);
   ballSerial.write(high); 
+  ballSerial.write(low);
+  ballSerial.write(checksum);
+}
+// システム状態（全体モードとデバッグ項目）をまとめてボールマイコンへ送信する関数
+void send_to_ball_system_status() {
+  uint8_t header = 0xAE;
+  uint8_t high = (uint8_t)currentMode;   // RobotModeを送信
+  uint8_t low  = (uint8_t)currentDebug;  // DebugModeを送信
+  uint8_t checksum = (uint8_t)(header + high + low);
+
+  ballSerial.write(header);
+  ballSerial.write(high);
   ballSerial.write(low);
   ballSerial.write(checksum);
 }
@@ -327,9 +348,7 @@ void setup() {
   Mstop();
 }
 
-// 現在のモードを保持
-RobotMode currentMode = MODE_DEBUG; 
-DebugMode currentDebug = DEBUG_BNO;
+
 
 void loop() {
     // センサー更新
@@ -366,9 +385,10 @@ void loop() {
       case MODE_DEBUG:
         switch (currentDebug) {
           case DEBUG_BALL:
+            send_to_ball_system_status();
             break;
           case DEBUG_BNO:
-            send_to_ball_angle(current_yaw);
+            send_to_ball_BNOdata(current_yaw);
             break;
           case DEBUG_LINE:
             send_to_ball_linedata(line_data);

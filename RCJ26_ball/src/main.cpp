@@ -23,13 +23,23 @@ void print_IR_data() {
 }
 
 // モードの定義
-enum Mode {
+enum RobotMode {
+  MODE_READY,     // 準備中
+  MODE_NORMAL,    // 通常走行
+  MODE_DEBUG,     // デバッグモード
+  MODE_STOP       // 停止
+};
+
+// デバッグモードの定義
+enum DebugMode {
   DEBUG_BALL,
   DEBUG_LINE,
   DEBUG_BNO,
 };
 
-Mode currentMode = DEBUG_LINE; // 現在のデバッグモード
+// 現在のモードを保持
+RobotMode currentMode = MODE_DEBUG; 
+DebugMode currentDebug = DEBUG_BNO;
 
 float IR_angle = NAN; // ボールの角度(-180 ~ 180)を格納するグローバル変数
 int IR_distance = 0; // ボールまでの距離を格納するグローバル変数
@@ -110,17 +120,18 @@ void debug_line_neopixel(uint16_t line_data) {
   pixels.show();  // 設定したデータを実際にLEDに送信
 }
 
-// シリアル通信関連
+
 uint16_t line_data = 0; // ラインセンサー情報保存用変数
+float current_yaw = 0.0f; // BNO情報保存用変数
 
-//HardwareSerial PCSerial(PA10, PA9);
-
+// シリアル通信関連
 HardwareSerial ballSerial(PA3, PA2); // RX, TX
+// 受信側の関数
 void receive_from_main() {
   while (ballSerial.available() >= 4) {
     uint8_t header = ballSerial.read();
 
-    if (header != 0xAA && header != 0xBB) {
+    if (header != 0xAA && header != 0xAC && header != 0xAE) {
       continue; // 不明なヘッダーなら無視
     }
 
@@ -139,12 +150,15 @@ void receive_from_main() {
     switch (header) {
       case 0xAA: // ラインセンサーのデータ
         line_data = combined_val;
+        currentMode = DEBUG_LINE;
         break;
-
-      case 0xBB: // BNOのデータ
-        
+      case 0xAC: // BNOのデータ
+        current_yaw = (float)((int16_t)combined_val) / 100.0f;
+        currentMode = DEBUG_BNO;
         break;
-
+      case 0xAE: // ボールのデバッグに変更
+        currentMode = DEBUG_BALL;
+        break;
       default:
         break;
     }
@@ -152,7 +166,6 @@ void receive_from_main() {
 }
 
 void setup() {
-  //PCSerial.begin(115200);
   ballSerial.begin(115200);
   delay(3000);
   pixels.begin(); // 通信開始
@@ -164,31 +177,23 @@ void setup() {
 }
 
 void loop() {
+  // センサー更新
+  calc_IR_data();//ボール
+  receive_from_main();//ラインorBNO
 
   switch (currentMode) {
     case DEBUG_BALL:
-      calc_IR_data();
       debug_neopixel(IR_angle, 0);
       break;
-
     case DEBUG_LINE:
       debug_line_neopixel(line_data);
       break;
-
     case DEBUG_BNO:
-      debug_neopixel(IR_angle, 1);
+      debug_neopixel(current_yaw, 1);
       break;
-
     default:
       break;
   }
-  // メインマイコンからのデータ更新
-  receive_from_main();
-  debug_neopixel(, 0);
-  //debug_line_neopixel(line_data);
-
-  //PCSerial.println("Hello World");
-
   delay(1); 
 }
 
