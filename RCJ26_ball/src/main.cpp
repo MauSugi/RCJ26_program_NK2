@@ -125,11 +125,30 @@ void receive_from_main() {
 }
 
 void setup() {
-  ballSerial.begin(115200);
-  delay(1000);
+  // 1. まずNeoPixelを初期化
   pixels.begin();
-  pixels.setBrightness(100); // 明るさ設定
+  pixels.setBrightness(70);
+  pixels.clear();
+  pixels.show(); // 一旦リセットを反映
+  delay(100);     // 安定するまで少し待つ
+
+  // 2. 青色をセット
+  for(int i=0; i<12; i++) {
+    pixels.setPixelColor(i, pixels.Color(0, 100, 100));
+    pixels.show();
+    delay(100);
+  }
+  
+  // その他の初期化
+  ballSerial.begin(115200);
   for (int i = 0; i < 12; i++) pinMode(IR_pins[i], INPUT);
+
+  // 4. 指定の3秒間待機
+  delay(1700);
+
+  // 5. 消灯
+  pixels.clear();
+  pixels.show();
 }
 
 void loop() {

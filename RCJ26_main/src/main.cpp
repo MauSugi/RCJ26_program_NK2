@@ -314,8 +314,11 @@ void handle_mode_logic() {
   if (btn_pressed[0]) {
     currentDebug = (DebugMode)((currentDebug + 1) % 3);
     // モードが変わったことをすぐに通知
-    send_to_line_system_status();
-    send_to_ball_system_status();
+    for(int i=0; i<3; i++) {
+      send_to_line_system_status();
+      send_to_ball_system_status();
+      delay(1); 
+    }
   }
 
   // その他のボタンは作成予定
