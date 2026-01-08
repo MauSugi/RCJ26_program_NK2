@@ -22,6 +22,15 @@ void print_IR_data() {
   Serial.println("\n");
 }
 
+// モードの定義
+enum Mode {
+  DEBUG_BALL,
+  DEBUG_LINE,
+  DEBUG_BNO,
+};
+
+Mode currentMode = DEBUG_LINE; // 現在のデバッグモード
+
 float IR_angle = NAN; // ボールの角度(-180 ~ 180)を格納するグローバル変数
 int IR_distance = 0; // ボールまでの距離を格納するグローバル変数
 // 角度(-180 ~ 180)、距離(0～)を計算して変数を更新する関数
@@ -132,8 +141,8 @@ void receive_from_main() {
         line_data = combined_val;
         break;
 
-      case 0xBB: // ボールセンサーのデータ
-        // 今回は使わない
+      case 0xBB: // BNOのデータ
+        
         break;
 
       default:
@@ -155,21 +164,28 @@ void setup() {
 }
 
 void loop() {
-  /*
-  uint16_t old_line_data = line_data;
+
+  switch (currentMode) {
+    case DEBUG_BALL:
+      calc_IR_data();
+      debug_neopixel(IR_angle, 0);
+      break;
+
+    case DEBUG_LINE:
+      debug_line_neopixel(line_data);
+      break;
+
+    case DEBUG_BNO:
+      debug_neopixel(IR_angle, 1);
+      break;
+
+    default:
+      break;
+  }
+  // メインマイコンからのデータ更新
   receive_from_main();
-
-  // データが変化したときだけLEDを更新
-  if (line_data != old_line_data) {
-    debug_line_neopixel(line_data);
-  }*/
-
-  // メインマイコンからのデータを受信（line_dataが更新される）
-  receive_from_main();
-
-  // 受信したライン情報をそのままNeoPixelに表示
-  // ※receive_from_mainでデータが来ない間は、最後に受信した値が保持されます
-  debug_line_neopixel(line_data);
+  debug_neopixel(, 0);
+  //debug_line_neopixel(line_data);
 
   //PCSerial.println("Hello World");
 

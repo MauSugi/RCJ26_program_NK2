@@ -9,7 +9,7 @@ float degtorad(float deg) {
 
 // モードの定義
 enum RobotMode {
-  MODE_READY,      // 準備中
+  MODE_READY,     // 準備中
   MODE_NORMAL,    // 通常走行
   MODE_DEBUG,     // デバッグモード
   MODE_STOP       // 停止
@@ -21,6 +21,49 @@ enum DebugMode {
   DEBUG_LINE,
   DEBUG_BNO,
 };
+
+//ボタンピンの定義
+const int button_pins[4]{
+  PB0, PB1, PB2, PB3
+};
+// ボタン管理用のグローバル変数
+bool btn_now[4] = {false, false, false, false};      // 今押されているか（生データ）
+bool btn_pressed[4] = {false, false, false, false};  // 押された瞬間だけtrue
+void update_buttons() {
+    static bool last_btn_state[4] = {false, false, false, false};
+    static unsigned long last_debounce[4] = {0, 0, 0, 0};
+
+    for (int i = 0; i < 4; i++) {
+        bool raw = digitalRead(button_pins[i]); // 抵抗の接続に合わせてHIGH/LOW調整
+        btn_pressed[i] = false; // 毎ループリセット
+
+        if (millis() - last_debounce[i] > 20) { // 20msチャタリング防止
+            if (raw != last_btn_state[i]) {
+                if (raw == HIGH) { // 立ち上がり（押された瞬間）
+                    btn_pressed[i] = true;
+                }
+                last_btn_state[i] = raw;
+                last_debounce[i] = millis();
+            }
+        }
+        btn_now[i] = last_btn_state[i];
+    }
+}
+// モード切り替え
+void handle_mode_logic() {
+    // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
+    if (btn_pressed[0]) {
+        currentDebug = (DebugMode)((currentDebug + 1) % 3);
+    }
+
+    // ボタン1：全体モードの切り替え (READY <-> NORMAL <-> DEBUG)
+    /*
+    if (btn_pressed[1]) {
+        if (currentMode == MODE_DEBUG) currentMode = MODE_READY;
+        else if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
+        else currentMode = MODE_NORMAL; // 必要に応じて調整
+    }*/
+}
 
 // BNO055関連
 #include <Wire.h>
@@ -151,7 +194,7 @@ void Mspin(float spn_rate){
 #define I_LIMIT 0.2f       // アンチワインドアップ（積分の最大値）
 #define OUTPUT_LIMIT 1.0f  // 出力の最大値（M_MAXに対する割合）
 float current_yaw = 0.0f;  // 現在のヨー角(Global)
-float target_angle = 0.0f;
+const float target_angle = 0.0f;
 float pre_error = 0.0f;
 float integral = 0.0f;
 unsigned long last_micros = 0; // micros()管理用
@@ -189,14 +232,37 @@ void receive_from_line() {
 }
 
 HardwareSerial ballSerial(PC11, PC10); // RX: PC11, TX: PC10
-// デバッグ用にボールマイコンに送信する関数(BNO,ライン,モード変更)
-void send_to_ball(uint16_t data) {
+// デバッグ用にボールマイコンにラインデータを送信する関数
+void send_to_ball_linedata(uint16_t data) {
   // バイト分解する
   uint8_t high = (data >> 8) & 0xFF; 
   uint8_t low  = data & 0xFF;
   uint8_t header = 0xAA;
 
   // チェックサムを計算（ヘッダー + 上位 + 下位）
+  uint8_t checksum = (uint8_t)(header + high + low);
+
+  // まとめて送信
+  ballSerial.write(header);
+  ballSerial.write(high); 
+  ballSerial.write(low);
+  ballSerial.write(checksum);
+}
+
+// 角度（float）を2バイトに圧縮してボールマイコンへ送信する関数
+void send_to_ball_angle(float angle) {
+  // -180.00 ～ 180.00 を -18000 ～ 18000 の整数に変換
+  // これにより小数点第2位まで保持したまま16bitに収まる
+  int16_t flat_angle = (int16_t)(angle * 100.0f);
+  
+  // 送信用にuint16_tとして解釈
+  uint16_t data = (uint16_t)flat_angle;
+
+  uint8_t high = (data >> 8) & 0xFF; 
+  uint8_t low  = data & 0xFF;
+  uint8_t header = 0xAC; // 角度データ用ヘッダー
+
+  // チェックサム計算
   uint8_t checksum = (uint8_t)(header + high + low);
 
   // まとめて送信
@@ -251,6 +317,9 @@ void setup() {
   for (int i = 0; i < 8; i++) {
     pinMode(motor_pins[i], OUTPUT);
   }
+  for (int i = 0; i < 4; i++){
+    pinMode(button_pins[i], INPUT);
+  }
 
   I2C_BNO.begin();
   BNO_init();
@@ -260,12 +329,15 @@ void setup() {
 
 // 現在のモードを保持
 RobotMode currentMode = MODE_DEBUG; 
+DebugMode currentDebug = DEBUG_BNO;
 
 void loop() {
     // センサー更新
+    update_buttons();
+    handle_mode_logic();
     receive_from_line(); // ライン情報の受信
     //receive_from_ball(); // ボール情報の受信
-    
+
     // 姿勢制御用の時間計測
     unsigned long current_micros = micros();
     float dt = (float)(current_micros - last_micros) / 1000000.0f;
@@ -285,20 +357,28 @@ void loop() {
     else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
 
     switch (currentMode) {
-        case MODE_READY:
-          // 準備中：特に動作なし
-          break;
-        case MODE_NORMAL:
-          // 試合モード
-          break;
-        case MODE_DEBUG:
-          // 作成中
-          send_to_ball(line_data);
-          Mstop();
-          break;
-        case MODE_STOP:
-          // 後で作る
-          break;
+      case MODE_READY:
+        // 準備中：特に動作なし
+        break;
+      case MODE_NORMAL:
+        // 試合モード
+        break;
+      case MODE_DEBUG:
+        switch (currentDebug) {
+          case DEBUG_BALL:
+            break;
+          case DEBUG_BNO:
+            send_to_ball_angle(current_yaw);
+            break;
+          case DEBUG_LINE:
+            send_to_ball_linedata(line_data);
+            break;
+        }
+        Mstop();
+        break;
+      case MODE_STOP:
+        // 後で作る
+        break;
     }
 
     pre_error = error;
