@@ -163,7 +163,7 @@ float normalize_angle(float angle) {
 }
 
 // ラインセンサー関連
-HardwareSerial lineSerial(PA3, PA2); // RX, TX
+HardwareSerial lineSerial(PA3, PA2); // RX: PA3, TX: PA2
 // ラインマイコンから受信する関数
 uint16_t line_data = 0; // 最新の正しいデータを保持
 void receive_from_line() {
@@ -190,7 +190,7 @@ void receive_from_line() {
   }
 }
 
-HardwareSerial ballSerial(PC11, PC10); // TX, RX
+HardwareSerial ballSerial(PC11, PC10); // RX: PC11, TX: PC10
 // デバッグ用にボールマイコンに送信する関数(BNO,ライン,モード変更)
 void send_to_ball(uint16_t data) {
   // バイト分解する
@@ -207,6 +207,7 @@ void send_to_ball(uint16_t data) {
   ballSerial.write(low);
   ballSerial.write(checksum);
 }
+
 
 //　ボールマイコンから受信する関数(ボールデータ)
 /* 作成中
@@ -232,18 +233,32 @@ void receive_from_ball() {
   }
 }*/
 
+// PCデバッグ用
+void print_line_data() {
+  for (int i = 0; i < 15; i++) {
+    if (line_data & (1 << i)) {
+      Serial.print("1 ");
+    } else {
+      Serial.print("0 ");
+    }
+  }
+  Serial.println("");
+}
+
 
 void setup() {
   Serial.begin(115200);
-  //delay(2000);
-  Serial.println("starting...");
+  lineSerial.begin(115200);
+  ballSerial.begin(115200);
+  delay(5000);
+  //Serial.println("starting...");
   for (int i = 0; i < 8; i++) {
     pinMode(motor_pins[i], OUTPUT);
   }
 
   I2C_BNO.begin();
   BNO_init();
-  Serial.println("BNO055 initialized.");
+  //Serial.println("BNO055 initialized.");
   Mstop();
 }
 
@@ -287,7 +302,7 @@ void loop() {
           //if (line_data & 0x8000) {
               // ボールあり
           //}
-          //Mstop();
+          Mstop();
           break;
         case MODE_STOP:
           // 後で作る

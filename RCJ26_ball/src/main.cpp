@@ -142,7 +142,8 @@ void receive_from_main() {
 
 void setup() {
   //Serial.begin(115200);
-
+  ballSerial.begin(115200);
+  delay(5000);
   pixels.begin(); // 通信開始
   pixels.clear(); // 全データを一旦「オフ」に設定
   pixels.show();  // 設定したデータ（オフ）を実際にLEDに送信して消灯させる
@@ -153,14 +154,23 @@ void setup() {
 }
 
 void loop() {
+  /*
   uint16_t old_line_data = line_data;
   receive_from_main();
 
   // データが変化したときだけLEDを更新
   if (line_data != old_line_data) {
     debug_line_neopixel(line_data);
-  }
-  delay(1);
+  }*/
+
+  // メインマイコンからのデータを受信（line_dataが更新される）
+  receive_from_main();
+
+  // 受信したライン情報をそのままNeoPixelに表示
+  // ※receive_from_mainでデータが来ない間は、最後に受信した値が保持されます
+  debug_line_neopixel(line_data);
+
+  delay(1); 
 }
 
 
