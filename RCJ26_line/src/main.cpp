@@ -24,6 +24,7 @@ const int line_pins[15] = {
 int line_analog_data[12];
 //　ラインデータを２値化して格納する16ビットの変数(下位15ビット使用)
 uint16_t line_data = 0;
+uint16_t last_sent_data = 0xFFFF; // 前回のデータを保持
 
 // PCデバッグ用
 void print_analog_data() {
@@ -46,10 +47,6 @@ void print_line_data() {
 
 // メインに送信する関数(4byte:ヘッダー1byte + データ2byte + チェックサム1byte)
 void send_to_main(uint16_t data) {
-  if (data & 0x7FFF) { 
-    data |= (1 << 15); // いずれかのラインが反応していればビット15を立てる
-  }
-
   // バイト分解する
   uint8_t high = (data >> 8) & 0xFF; 
   uint8_t low  = data & 0xFF;
@@ -67,7 +64,7 @@ void send_to_main(uint16_t data) {
 
 void setup() {
   Serial.begin(115200);
-  delay(5000);
+  delay(3000);
   // 2. 配列を使って一括でピンモードを設定
   for (int i = 0; i < 15; i++) {
     pinMode(line_pins[i], INPUT);
@@ -96,9 +93,14 @@ void loop() {
   }
   */
   
+  // 「データが変化したとき」または「50msに1回（生存確認）」送信
+  static unsigned long last_send_time = 0;
+  if (line_data != last_sent_data || millis() - last_send_time > 50) {
+    send_to_main(line_data);
+    last_sent_data = line_data;
+    last_send_time = millis();
+  }
+  delay(1); // ループは高速に回す
   //print_analog_data();
   //print_line_data();
-
-  send_to_main(line_data);
-  delay(1);
 }

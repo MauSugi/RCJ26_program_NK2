@@ -184,8 +184,6 @@ void receive_from_line() {
     if (calc_sum == checksum) {
       // 正しいデータなら更新
       line_data = (uint16_t)((high << 8) | low);
-    } else {
-      // エラーならこのパケットは捨てる（何もしない）
     }
   }
 }
@@ -207,7 +205,6 @@ void send_to_ball(uint16_t data) {
   ballSerial.write(low);
   ballSerial.write(checksum);
 }
-
 
 //　ボールマイコンから受信する関数(ボールデータ)
 /* 作成中
@@ -245,12 +242,11 @@ void print_line_data() {
   Serial.println("");
 }
 
-
 void setup() {
   Serial.begin(115200);
   lineSerial.begin(115200);
   ballSerial.begin(115200);
-  delay(5000);
+  delay(3000);
   //Serial.println("starting...");
   for (int i = 0; i < 8; i++) {
     pinMode(motor_pins[i], OUTPUT);
@@ -298,10 +294,6 @@ void loop() {
         case MODE_DEBUG:
           // 作成中
           send_to_ball(line_data);
-          //16ビット目が立っているならボールあり
-          //if (line_data & 0x8000) {
-              // ボールあり
-          //}
           Mstop();
           break;
         case MODE_STOP:

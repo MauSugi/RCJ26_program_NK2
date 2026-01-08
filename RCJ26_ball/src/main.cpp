@@ -104,6 +104,8 @@ void debug_line_neopixel(uint16_t line_data) {
 // シリアル通信関連
 uint16_t line_data = 0; // ラインセンサー情報保存用変数
 
+//HardwareSerial PCSerial(PA10, PA9);
+
 HardwareSerial ballSerial(PA3, PA2); // RX, TX
 void receive_from_main() {
   while (ballSerial.available() >= 4) {
@@ -141,13 +143,12 @@ void receive_from_main() {
 }
 
 void setup() {
-  //Serial.begin(115200);
+  //PCSerial.begin(115200);
   ballSerial.begin(115200);
-  delay(5000);
+  delay(3000);
   pixels.begin(); // 通信開始
   pixels.clear(); // 全データを一旦「オフ」に設定
   pixels.show();  // 設定したデータ（オフ）を実際にLEDに送信して消灯させる
-
   for (int i = 0; i < 12; i++) {
     pinMode(IR_pins[i], INPUT);
   }
@@ -169,6 +170,8 @@ void loop() {
   // 受信したライン情報をそのままNeoPixelに表示
   // ※receive_from_mainでデータが来ない間は、最後に受信した値が保持されます
   debug_line_neopixel(line_data);
+
+  //PCSerial.println("Hello World");
 
   delay(1); 
 }
