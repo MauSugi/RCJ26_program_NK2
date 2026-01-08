@@ -244,6 +244,18 @@ void send_to_ball_system_status() {
   ballSerial.write(low);
   ballSerial.write(checksum);
 }
+// 同様のラインマイコンへ送信する関数
+void send_to_line_system_status() {
+  uint8_t header = 0xAE;
+  uint8_t high = (uint8_t)currentMode;   // RobotModeを送信
+  uint8_t low  = (uint8_t)currentDebug;  // DebugModeを送信
+  uint8_t checksum = (uint8_t)(header + high + low);
+
+  lineSerial.write(header);
+  lineSerial.write(high);
+  lineSerial.write(low);
+  lineSerial.write(checksum);
+}
 
 //　ボールマイコンから受信する関数(ボールデータ)
 /* 作成中
@@ -284,7 +296,7 @@ void update_buttons() {
         bool raw = digitalRead(button_pins[i]); // 抵抗の接続に合わせてHIGH/LOW調整
         btn_pressed[i] = false; // 毎ループリセット
 
-        if (millis() - last_debounce[i] > 20) { // 20msチャタリング防止
+        if (millis() - last_debounce[i] > 10) { // 10msチャタリング防止
             if (raw != last_btn_state[i]) {
                 if (raw == HIGH) { // 立ち上がり（押された瞬間）
                     btn_pressed[i] = true;
@@ -302,21 +314,12 @@ void handle_mode_logic() {
   if (btn_pressed[0]) {
     currentDebug = (DebugMode)((currentDebug + 1) % 3);
     // モードが変わったことをすぐに通知
+    send_to_line_system_status();
     send_to_ball_system_status();
   }
 
-  // ボタン1：全体モードの切り替え (READY -> NORMAL -> DEBUG -> READY)
-  /*
-  if (btn_pressed[1]) {
-    if (currentMode == MODE_READY) currentMode = MODE_NORMAL;
-    else if (currentMode == MODE_NORMAL) currentMode = MODE_DEBUG;
-    else currentMode = MODE_READY;
-    
-    // モードが変わったことをすぐに通知
-    send_to_ball_system_status();
-  }*/
+  // その他のボタンは作成予定
 }
-
 
 // PCデバッグ用
 void print_line_data() {
@@ -337,7 +340,6 @@ void setup() {
   lineSerial.begin(115200);
   ballSerial.begin(115200);
   delay(3000);
-  //Serial.println("starting...");
   for (int i = 0; i < 8; i++) {
     pinMode(motor_pins[i], OUTPUT);
   }
@@ -386,10 +388,14 @@ void loop() {
       case MODE_DEBUG:
         switch (currentDebug) {
           case DEBUG_BALL:
-            send_to_ball_system_status();
             break;
           case DEBUG_BNO:
-            send_to_ball_BNOdata(current_yaw);
+            // BNOの送信頻度だけを30msに1回（約33Hz）に制限
+            static unsigned long last_bno_send = 0;
+            if (millis() - last_bno_send > 30) {
+              send_to_ball_BNOdata(current_yaw);
+              last_bno_send = millis();
+            }
             break;
           case DEBUG_LINE:
             send_to_ball_linedata(line_data);
@@ -405,4 +411,11 @@ void loop() {
     pre_error = error;
     last_micros = current_micros;
     delay(1); 
+
+    static unsigned long last_backup_sync = 0;
+    if (millis() - last_backup_sync > 2000) { // 2秒に1回だけ「念のため」同期
+      send_to_line_system_status();
+      send_to_ball_system_status();
+      last_backup_sync = millis();
+    }
 }

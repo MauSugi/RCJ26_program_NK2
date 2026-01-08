@@ -7,6 +7,25 @@ float degtorad(float deg) {
   return deg * PI / 180.0f;
 }
 
+// モードの定義
+enum RobotMode {
+  MODE_READY,     // 準備中
+  MODE_NORMAL,    // 通常走行
+  MODE_DEBUG,     // デバッグモード
+  MODE_STOP       // 停止
+};
+
+// デバッグモードの定義
+enum DebugMode {
+  DEBUG_BALL,
+  DEBUG_LINE,
+  DEBUG_BNO,
+};
+
+// 現在のモードを保持
+RobotMode currentMode = MODE_DEBUG; 
+DebugMode currentDebug = DEBUG_BNO;
+
 const int line_TH[12] = {
   400, 450, 360, 530, 430, 330,
   310, 420, 340, 310, 300, 390
@@ -61,6 +80,22 @@ void send_to_main(uint16_t data) {
   Serial.write(low);
   Serial.write(checksum);
 }
+// メインからモード状態を受信する関数
+void receive_from_main() {
+  while (Serial.available() >= 4) {
+    uint8_t header = Serial.read();
+    if (header != 0xAE) continue;
+
+    uint8_t high = Serial.read();
+    uint8_t low  = Serial.read();
+    uint8_t checksum = Serial.read();
+
+    if ((uint8_t)(header + high + low) != checksum) continue;
+
+    currentMode = (RobotMode)high;
+    currentDebug = (DebugMode)low;
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -72,6 +107,9 @@ void setup() {
 }
 
 void loop() {
+  // モードの確認
+  receive_from_main();
+
   line_data = 0; //ラインデータ初期化
 
   // アナログライン（アナログ12個）の処理
@@ -92,14 +130,25 @@ void loop() {
     }
   }
   */
-  
-  // 「データが変化したとき」または「50msに1回（生存確認）」送信
-  static unsigned long last_send_time = 0;
-  if (line_data != last_sent_data || millis() - last_send_time > 50) {
-    send_to_main(line_data);
-    last_sent_data = line_data;
-    last_send_time = millis();
+ 
+  // --- 送信条件の判定 ---
+  // NORMALモード時、または DEBUGモードかつLINEデバッグ選択時のみ送信
+  bool should_send = (currentMode == MODE_NORMAL) || (currentMode == MODE_DEBUG && currentDebug == DEBUG_LINE);
+
+  if (should_send) {
+    // 「データが変化したとき」または「50msに1回（生存確認）」送信
+    static unsigned long last_send_time = 0;
+    if (line_data != last_sent_data || millis() - last_send_time > 50) {
+      send_to_main(line_data);
+      last_sent_data = line_data;
+      last_send_time = millis();
+    }
+  } else {
+    // 送信しないときは、last_sent_dataを初期化しておくと
+    // 次に送信モードに切り替わった瞬間に最新データが即座に送られます
+    last_sent_data = 0xFFFF; 
   }
+
   delay(1); // ループは高速に回す
   //print_analog_data();
   //print_line_data();

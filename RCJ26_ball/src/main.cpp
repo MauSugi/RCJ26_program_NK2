@@ -51,13 +51,16 @@ void calc_IR_data() {
 #define LED_COUNT 12
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
+uint16_t line_data = 0;
+float current_yaw = 0.0f;
+
 // LED表示の更新関数
 void update_led_display() {
   pixels.clear();
 
   // 1. ロボットが「準備中」のとき：全体を薄く青く光らせる（生存確認）
   if (currentMode == MODE_READY) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 0, 5));
+    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 0, 70));
   }
   
   // 2. 「デバッグモード」のとき：項目の内容を表示
@@ -66,26 +69,25 @@ void update_led_display() {
       case DEBUG_BALL:
         if (!isnan(IR_angle)) {
           int idx = (int)(round(IR_angle / 30.0f) + 12) % 12;
-          pixels.setPixelColor(idx, pixels.Color(30, 0, 0)); // 赤色：ボール
+          pixels.setPixelColor(idx, pixels.Color(70, 0, 0)); // 赤色：ボール
         }
         break;
       case DEBUG_LINE:
-        extern uint16_t line_data;
         for (int i = 0; i < 12; i++) {
-          if (line_data & (1 << i)) pixels.setPixelColor(i, pixels.Color(30, 30, 30)); // 白色：ライン
+          if (line_data & (1 << i)) pixels.setPixelColor(i, pixels.Color(70, 70, 70)); // 白色：ライン
         }
         break;
       case DEBUG_BNO:
-        extern float current_yaw;
-        int idx = (int)(round(current_yaw / 30.0f) + 12) % 12;
-        pixels.setPixelColor(idx, pixels.Color(0, 30, 0)); // 緑色：ジャイロ正面
+        float yaw_debug = - current_yaw;
+        int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
+        pixels.setPixelColor(idx, pixels.Color(0, 70, 0)); // 緑色：ジャイロ正面
         break;
     }
   }
   
   // 3. 「停止」のとき：全体を赤く
   else if (currentMode == MODE_STOP) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(30, 0, 0));
+    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(70, 0, 0));
   }
 
   // ※NORMALモードの時は基本消灯（またはボール方向のみ薄く光らせる等）
@@ -94,9 +96,6 @@ void update_led_display() {
 
 // --- 通信関連 ---
 HardwareSerial ballSerial(PA3, PA2);
-uint16_t line_data = 0;
-float current_yaw = 0.0f;
-
 void receive_from_main() {
   while (ballSerial.available() >= 4) {
     uint8_t header = ballSerial.read();
