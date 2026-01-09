@@ -20,6 +20,7 @@ enum DebugMode {
   DEBUG_BALL,
   DEBUG_LINE,
   DEBUG_BNO,
+  DEBUG_MOTOR
 };
 
 // 現在のモードを保持
@@ -284,15 +285,15 @@ void receive_from_ball(){
       bool ball_exists = (status_byte & 0x80) != 0;
 
       if (!ball_exists) {
-        ball_angle = NAN;
-        ball_dist = 0;
+        IR_angle = NAN;
+        IR_distance = 0;
       } else {
         // 5. データの復元
         // 角度: 0~255 -> -180~180
-        ball_angle = (float)angle_byte * (360.0f / 255.0f) - 180.0f;
+        IR_angle = (float)angle_byte * (360.0f / 255.0f) - 180.0f;
         
         // 距離: 下位7bitを取り出して復元 0~127 -> 0~7000
-        ball_dist = (int)(status_byte & 0x7F) * 55;
+        IR_distance = (int)(status_byte & 0x7F) * 55;
       }
     }
   }
@@ -329,7 +330,7 @@ void update_buttons() {
 void handle_mode_logic() {
   // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
   if (btn_pressed[0]) {
-    currentDebug = (DebugMode)((currentDebug + 1) % 3);
+    currentDebug = (DebugMode)((currentDebug + 1) % 4);
     // モードが変わったことをすぐに通知
     for(int i=0; i<3; i++) {
       send_to_line_system_status();
@@ -419,8 +420,49 @@ void loop() {
           case DEBUG_LINE:
             send_to_ball_linedata(line_data);
             break;
+          case DEBUG_MOTOR:
+            static int cw_state = 0;  // 0:停止, 1:M1, 2:M2, 3:M3, 4:M4 (時計回り用)
+            static int ccw_state = 0; // 0:停止, 1:M1, 2:M2, 3:M3, 4:M4 (反時計回り用)
+            static bool pid_enabled = false;
+
+            // --- ボタン処理 ---
+            if (btn_pressed[1]) { // ボタン1: 時計回り順送り
+              cw_state = (cw_state + 1) % 5;
+              ccw_state = 0; pid_enabled = false; // 他のテストはリセット
+            }
+            if (btn_pressed[2]) { // ボタン2: 反時計回り順送り
+              ccw_state = (ccw_state + 1) % 5;
+              cw_state = 0; pid_enabled = false; // 他のテストはリセット
+            }
+            if (btn_pressed[3]) { // ボタン3: PID切り替え
+              pid_enabled = !pid_enabled;
+              cw_state = 0; ccw_state = 0;      // 他のテストはリセット
+            }
+
+            // --- 動作反映 ---
+            Mstop(); // デフォルトは停止
+            float spd = 0.4f * M_MAX;
+
+            if (pid_enabled) {
+              Mspin(sisei_output); // PID制御
+            } 
+            else if (cw_state > 0) {
+              // 時計回り (Positive)
+              if (cw_state == 1) M1move(spd);
+              else if (cw_state == 2) M2move(spd);
+              else if (cw_state == 3) M3move(spd);
+              else if (cw_state == 4) M4move(spd);
+            } 
+            else if (ccw_state > 0) {
+              // 反時計回り (Negative)
+              if (ccw_state == 1) M1move(-spd);
+              else if (ccw_state == 2) M2move(-spd);
+              else if (ccw_state == 3) M3move(-spd);
+              else if (ccw_state == 4) M4move(-spd);
+            }
+            break;
         }
-        Mstop();
+        if(currentDebug != DEBUG_MOTOR) Mstop();
         break;
       case MODE_STOP:
         // 後で作る

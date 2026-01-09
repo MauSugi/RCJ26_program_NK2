@@ -20,6 +20,7 @@ enum DebugMode {
   DEBUG_BALL,
   DEBUG_LINE,
   DEBUG_BNO,
+  DEBUG_MOTOR
 };
 
 // 現在のモードを保持

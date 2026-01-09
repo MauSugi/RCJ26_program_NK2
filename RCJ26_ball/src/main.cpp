@@ -13,6 +13,7 @@ enum DebugMode {
   DEBUG_BALL,
   DEBUG_LINE,
   DEBUG_BNO,
+  DEBUG_MOTOR
 };
 
 // 現在の状態を保持（メインマイコンと同期）
@@ -44,18 +45,6 @@ void calc_IR_data() {
   IR_angle = degrees(atan2(y, x));
   IR_distance = sum;
 }
-
-/* メモ */
-//IR_distance は (0 ~ 7000ほど)
-//ボールなしで100から200
-//ボール遠いかつ遮蔽ありで500あたり
-//ボール遠いかつ遮蔽なしで2000あたり
-//ボール中くらいで3000遮蔽ありで1300あたり
-//以上の結果から
-//IR_distanceが500以上1000未満でボールあり遮蔽あり
-//IR_distanceが1000以上4000未満で遠~中くらいの距離
-//IR_distanceが4000以上で至近距離
-//としてもいいかも？
 
 // --- NeoPixel関連 ---
 #include <Adafruit_NeoPixel.h>
@@ -107,6 +96,14 @@ void update_led_display() {
         int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
         pixels.setPixelColor(idx, pixels.Color(0, 70, 0));
         break;
+
+      case DEBUG_MOTOR: // --- モーターデバッグ時の表示を追加 ---
+        // モーターデバッグ中であることを示すため、紫色の光を回転させる
+        // 明るすぎるとモーターに電流がいかないことも考えられるから抑えめで
+        static int motor_led_idx = 0;
+        pixels.setPixelColor(motor_led_idx, pixels.Color(20, 0, 20)); // 紫
+        motor_led_idx = (motor_led_idx + 1) % 12;
+        break;
     }
   }
   else if (currentMode == MODE_STOP) {
@@ -116,7 +113,6 @@ void update_led_display() {
   pixels.show();
 }
 
-// 通信関連
 HardwareSerial ballSerial(PA3, PA2);
 
 void receive_from_main(){
@@ -201,14 +197,11 @@ void setup() {
   //PCSerial.begin(115200);
   for (int i = 0; i < 12; i++) pinMode(IR_pins[i], INPUT);
 
-  // 4. 指定の3秒間待機
-  delay(1700);
+  delay(1700);// 3秒間待機になるように合わせる
 
   // 5. 消灯
   pixels.clear();
   pixels.show();
-
-  //PCSerial.println("starting..");
 }
 
 void loop() {
@@ -225,3 +218,15 @@ void loop() {
   update_led_display(); // モードに合わせたLED表示
   delay(1);
 }
+
+/* メモ */
+//IR_distance は (0 ~ 7000ほど)
+//ボールなしで100から200
+//ボール遠いかつ遮蔽ありで500あたり
+//ボール遠いかつ遮蔽なしで2000あたり
+//ボール中くらいで3000遮蔽ありで1300あたり
+//以上の結果から
+//IR_distanceが500以上1000未満でボールあり遮蔽あり
+//IR_distanceが1000以上4000未満で遠~中くらいの距離
+//IR_distanceが4000以上で至近距離
+//としてもいいかも？
