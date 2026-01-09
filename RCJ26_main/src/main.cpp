@@ -258,7 +258,7 @@ void send_to_line_system_status() {
   lineSerial.write(checksum);
 }
 
-float IR_angle = NAN;
+float IR_angle = NAN;//いったんこれだけ使う予定
 int IR_distance = 0;
 
 // ボールマイコンからボールデータを受信する関数
