@@ -109,7 +109,7 @@ void setup() {
 void loop() {
   // モードの確認
   receive_from_main();
-
+  
   line_data = 0; //ラインデータ初期化
 
   // アナログライン（アナログ12個）の処理

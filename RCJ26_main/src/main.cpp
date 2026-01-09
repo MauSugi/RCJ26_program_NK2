@@ -9,7 +9,7 @@ float degtorad(float deg) {
 
 // モードの定義
 enum RobotMode {
-  MODE_READY,     // 準備中
+  MODE_READY,     // 準備完了
   MODE_NORMAL,    // 通常走行
   MODE_DEBUG,     // デバッグモード
   MODE_STOP       // 停止
@@ -192,6 +192,7 @@ void receive_from_line() {
   }
 }
 
+
 HardwareSerial ballSerial(PC11, PC10); // RX: PC11, TX: PC10
 // デバッグ用にボールマイコンにラインデータを送信する関数
 void send_to_ball_linedata(uint16_t data) {
@@ -257,29 +258,45 @@ void send_to_line_system_status() {
   lineSerial.write(checksum);
 }
 
-//　ボールマイコンから受信する関数(ボールデータ)
-/* 作成中
-void receive_from_ball() {
+float IR_angle = NAN;
+int IR_distance = 0;
+
+// ボールマイコンからボールデータを受信する関数
+void receive_from_ball(){
   // 4バイト以上溜まっている間、パケットを探し続ける
-  while (Serial.available() >= 4) {
-    // 1. ヘッダー(0xAA)を探す
-    if (Serial.read() != 0xAA) {
-      continue; // 0xAAでないなら読み飛ばして次へ
+  while (ballSerial.available() >= 4) {
+    // 1. ヘッダー(0xA1)を探す
+    if (ballSerial.read() != 0xA1) {
+      continue; 
     }
 
-    // 2. ヘッダーが見つかったら残りを読み込む
-    uint8_t high = Serial.read();
-    uint8_t low  = Serial.read();
-    uint8_t checksum = Serial.read();
+    // 2. 残りのデータを読み込む
+    uint8_t angle_byte  = ballSerial.read();
+    uint8_t status_byte = ballSerial.read();
+    uint8_t checksum    = ballSerial.read();
 
     // 3. チェックサム確認
-    uint8_t calc_sum = (uint8_t)(0xAA + high + low);
+    uint8_t header = 0xA1;
+    uint8_t calc_sum = (uint8_t)(header + angle_byte + status_byte);
+
     if (calc_sum == checksum) {
-      // 正しいデータなら更新
-      line_data = (uint16_t)((high << 8) | low);
+      // 4. ステータスバイトの最上位ビット(Bit7)でボールの有無を確認
+      bool ball_exists = (status_byte & 0x80) != 0;
+
+      if (!ball_exists) {
+        ball_angle = NAN;
+        ball_dist = 0;
+      } else {
+        // 5. データの復元
+        // 角度: 0~255 -> -180~180
+        ball_angle = (float)angle_byte * (360.0f / 255.0f) - 180.0f;
+        
+        // 距離: 下位7bitを取り出して復元 0~127 -> 0~7000
+        ball_dist = (int)(status_byte & 0x7F) * 55;
+      }
     }
   }
-}*/
+}
 
 //ボタンピンの定義
 const int button_pins[4]{
@@ -336,7 +353,6 @@ void print_line_data() {
   Serial.println("");
 }
 
-
 // メインストリーム
 void setup() {
   Serial.begin(115200);
@@ -361,7 +377,7 @@ void loop() {
     update_buttons();
     handle_mode_logic();
     receive_from_line(); // ライン情報の受信
-    //receive_from_ball(); // ボール情報の受信
+    receive_from_ball(); // ボール情報の受信
 
     // 姿勢制御用の時間計測
     unsigned long current_micros = micros();
