@@ -17,9 +17,8 @@ enum DebugMode {
 };
 
 // 現在の状態を保持（メインマイコンと同期）
-RobotMode currentMode = MODE_DEBUG; 
-DebugMode currentDebug = DEBUG_BNO;
-
+RobotMode currentMode = MODE_READY; 
+DebugMode currentDebug = DEBUG_BALL;
 
 // --- IRセンサー関連 ---
 const int IR_pins[12] = { PC0, PC1, PC2, PC3, PC4, PC5, PA4, PA5, PA6, PA7, PB0, PB1 };
@@ -76,7 +75,7 @@ void update_led_display() {
 
   // --- 描画ロジック ---
   if (currentMode == MODE_READY) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 0, 70));
+    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 50, 0));
   }
   else if (currentMode == MODE_DEBUG) {
     switch (currentDebug) {
@@ -91,23 +90,21 @@ void update_led_display() {
           if (line_data & (1 << i)) pixels.setPixelColor(i, pixels.Color(70, 70, 70));
         }
         break;
-      case DEBUG_BNO:
+      case DEBUG_BNO: {
         float yaw_debug = - current_yaw;
         int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
         pixels.setPixelColor(idx, pixels.Color(0, 70, 0));
-        break;
-
-      case DEBUG_MOTOR: // --- モーターデバッグ時の表示を追加 ---
-        // モーターデバッグ中であることを示すため、紫色の光を回転させる
-        // 明るすぎるとモーターに電流がいかないことも考えられるから抑えめで
-        static int motor_led_idx = 0;
-        pixels.setPixelColor(motor_led_idx, pixels.Color(20, 0, 20)); // 紫
-        motor_led_idx = (motor_led_idx + 1) % 12;
-        break;
+      } break;
+      case DEBUG_MOTOR: {
+        // 12個すべてを薄い紫で点灯
+        for(int i=0; i<12; i++) {
+          pixels.setPixelColor(i, pixels.Color(10, 0, 10)); 
+        }
+      } break;
     }
   }
   else if (currentMode == MODE_STOP) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(70, 0, 0));
+    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(50, 0, 0));
   }
 
   pixels.show();
@@ -218,6 +215,8 @@ void loop() {
   update_led_display(); // モードに合わせたLED表示
   delay(1);
 }
+
+
 
 /* メモ */
 //IR_distance は (0 ~ 7000ほど)

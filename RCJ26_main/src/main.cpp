@@ -24,7 +24,7 @@ enum DebugMode {
 };
 
 // 現在のモードを保持
-RobotMode currentMode = MODE_DEBUG; 
+RobotMode currentMode = MODE_READY; 
 DebugMode currentDebug = DEBUG_BNO;
 
 // BNO055関連
@@ -135,7 +135,7 @@ void Mstop() {
   M3move(0);
   M4move(0);
 }
-// 指定した角度と速度で全モーターを動かす関数(-180 ~ 180)
+// 指定した角度と速度で全モーターを動かす関数(angle:-180 ~ 180, spd_rate:0 ~ 1)
 void Mmove(float angle, float spd_rate){
   M1move(sin(degtorad(angle-45.0f)) * spd_rate * M_MAX);
   M2move(sin(degtorad(angle-135.0f)) * spd_rate * M_MAX);
@@ -152,8 +152,8 @@ void Mspin(float spn_rate){
 //姿勢(PID)制御関連
 #define P_GAIN 4.0f
 #define I_GAIN 1.0f
-#define D_GAIN 1.0f
-#define I_LIMIT 0.2f       // アンチワインドアップ（積分の最大値）
+#define D_GAIN 0.1f
+#define I_LIMIT 50.0f       // アンチワインドアップ（積分の最大値）
 #define OUTPUT_LIMIT 1.0f  // 出力の最大値（M_MAXに対する割合）
 float current_yaw = 0.0f;  // 現在のヨー角(Global)
 const float target_angle = 0.0f;
@@ -301,7 +301,7 @@ void receive_from_ball(){
 
 //ボタンピンの定義
 const int button_pins[4]{
-  PB0, PB1, PB2, PB3
+  PB0, PB1, PB2, PB4
 };
 // ボタン管理用のグローバル変数
 bool btn_now[4] = {false, false, false, false};      // 今押されているか（生データ）
@@ -328,18 +328,45 @@ void update_buttons() {
 }
 // モード切り替えロジック
 void handle_mode_logic() {
-  // ボタン0：デバッグ項目の切り替え (BALL -> LINE -> BNO)
-  if (btn_pressed[0]) {
-    currentDebug = (DebugMode)((currentDebug + 1) % 4);
-    // モードが変わったことをすぐに通知
-    for(int i=0; i<3; i++) {
-      send_to_line_system_status();
-      send_to_ball_system_status();
-      delay(1); 
+  bool mode_changed = false;
+
+  // ボタン3: メインモード切替 (READY → DEBUG → STOP → READY...)
+  if (btn_pressed[3]) {
+    if (currentMode == MODE_READY)      currentMode = MODE_DEBUG;
+    else if (currentMode == MODE_DEBUG) currentMode = MODE_STOP;
+    else if (currentMode == MODE_STOP)  currentMode = MODE_READY;
+    else if (currentMode == MODE_NORMAL) currentMode = MODE_STOP; // 走行中もボタン3で停止
+    
+    Mstop(); // モード切替時は安全のためモーター停止
+    mode_changed = true;
+  }
+
+  // ボタン2: READY状態の時だけ、通常走行(NORMAL)へ移行
+  if (btn_pressed[2]) {
+    if (currentMode == MODE_READY) {
+      currentMode = MODE_NORMAL;
+      mode_changed = true;
     }
   }
 
-  // その他のボタンは作成予定
+  // ボタン0: デバッグ項目の切り替え (BALL -> LINE -> BNO -> MOTOR)
+  // デバッグモードの時だけ有効
+  if (btn_pressed[0]) {
+    if (currentMode == MODE_DEBUG) {
+      currentDebug = (DebugMode)((currentDebug + 1) % 4);
+      Mstop(); // デバッグ項目切り替え時も一旦停止
+      mode_changed = true;
+    }
+  }
+
+  // モードやデバッグ項目が変わった場合、即座に各マイコンへ通知
+  if (mode_changed) {
+    for(int i = 0; i < 3; i++) {
+      send_to_line_system_status();
+      send_to_ball_system_status();
+      delay(2); 
+    }
+  }
 }
 
 // PCデバッグ用
@@ -371,6 +398,15 @@ void setup() {
   BNO_init();
   //Serial.println("BNO055 initialized.");
   Mstop();
+
+  // サブマイコンへ現在のモードを強制同期（念のため3回送信）
+  for(int i = 0; i < 3; i++) {
+    send_to_line_system_status();
+    send_to_ball_system_status();
+    delay(5); // 確実に受信させるための短い待ち時間
+  }
+  
+  last_micros = micros(); // PID用の時間管理をここから開始
 }
 
 void loop() {
@@ -386,24 +422,31 @@ void loop() {
     if (dt <= 0.0001f) { delay(1); return; }
 
     // 角度・PID制御計算
-    float current_yaw = BNO_get_yaw();
-    float error = normalize_angle(target_angle - current_yaw) / 180.0f;
+    current_yaw = BNO_get_yaw();
+    float error = normalize_angle(target_angle - current_yaw);
     float p_out = P_GAIN * error;
     integral += error * dt;
     if (integral > I_LIMIT)  integral = I_LIMIT;
     else if (integral < -I_LIMIT) integral = -I_LIMIT;
     float i_out = I_GAIN * integral;
     float d_out = D_GAIN * (error - pre_error) / dt;
-    float sisei_output = p_out + i_out + d_out;
+    float sisei_output = (p_out + i_out + d_out) / M_MAX;
+    if (abs(error) > 0.5f) { // 0.5度以上のズレがあるなら
+        float min_pwm = 0.1f; // モーターが動き出す最小の力（15%など。実機で調整）
+        if (sisei_output > 0) sisei_output += min_pwm;
+        else if (sisei_output < 0) sisei_output -= min_pwm;
+    }
     if (sisei_output > OUTPUT_LIMIT)  sisei_output = OUTPUT_LIMIT;
     else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
 
+    
     switch (currentMode) {
       case MODE_READY:
-        // 準備中：特に動作なし
+        Mstop();
         break;
       case MODE_NORMAL:
         // 試合モード
+        Mmove(0, 1);
         break;
       case MODE_DEBUG:
         switch (currentDebug) {
@@ -426,46 +469,47 @@ void loop() {
             static bool pid_enabled = false;
 
             // --- ボタン処理 ---
-            if (btn_pressed[1]) { // ボタン1: 時計回り順送り
+            if (btn_pressed[1]) {
               cw_state = (cw_state + 1) % 5;
-              ccw_state = 0; pid_enabled = false; // 他のテストはリセット
+              ccw_state = 0; pid_enabled = false; Mstop(); // モード変更時に一旦止める
             }
-            if (btn_pressed[2]) { // ボタン2: 反時計回り順送り
+            if (btn_pressed[2]) {
               ccw_state = (ccw_state + 1) % 5;
-              cw_state = 0; pid_enabled = false; // 他のテストはリセット
+              cw_state = 0; pid_enabled = false; Mstop();
             }
-            if (btn_pressed[3]) { // ボタン3: PID切り替え
+            if (btn_pressed[3]) {
               pid_enabled = !pid_enabled;
-              cw_state = 0; ccw_state = 0;      // 他のテストはリセット
+              cw_state = 0; ccw_state = 0; Mstop();
             }
 
             // --- 動作反映 ---
-            Mstop(); // デフォルトは停止
-            float spd = 0.4f * M_MAX;
-
             if (pid_enabled) {
-              Mspin(sisei_output); // PID制御
+              // 姿勢制御（不感帯補正が必要ならここに追加）
+              Mspin(sisei_output); 
             } 
             else if (cw_state > 0) {
-              // 時計回り (Positive)
+              float spd = 0.4f * M_MAX;
               if (cw_state == 1) M1move(spd);
               else if (cw_state == 2) M2move(spd);
               else if (cw_state == 3) M3move(spd);
               else if (cw_state == 4) M4move(spd);
             } 
             else if (ccw_state > 0) {
-              // 反時計回り (Negative)
+              float spd = 0.4f * M_MAX;
               if (ccw_state == 1) M1move(-spd);
               else if (ccw_state == 2) M2move(-spd);
               else if (ccw_state == 3) M3move(-spd);
               else if (ccw_state == 4) M4move(-spd);
+            } else {
+              Mstop(); // 何も選択されていない時は停止
             }
+
             break;
         }
         if(currentDebug != DEBUG_MOTOR) Mstop();
         break;
       case MODE_STOP:
-        // 後で作る
+        Mstop();
         break;
     }
 
