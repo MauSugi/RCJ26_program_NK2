@@ -1,24 +1,14 @@
 #include <Arduino.h>
 #include <math.h>
+#include <Adafruit_NeoPixel.h>
 
 // --- 定数・列挙型の定義 ---
-enum RobotMode {
-  MODE_READY,     // 準備中
-  MODE_NORMAL,    // 通常走行
-  MODE_DEBUG,     // デバッグモード
-  MODE_STOP       // 停止
-};
+enum RobotMode { MODE_READY, MODE_NORMAL, MODE_DEBUG, MODE_STOP };
+enum DebugMode { DEBUG_BALL, DEBUG_LINE, DEBUG_BNO, DEBUG_MOTOR };
 
-enum DebugMode {
-  DEBUG_BALL,
-  DEBUG_LINE,
-  DEBUG_BNO,
-  DEBUG_MOTOR
-};
-
-// 現在の状態を保持（メインマイコンと同期）
 RobotMode currentMode = MODE_READY; 
 DebugMode currentDebug = DEBUG_BALL;
+bool is_calibrating = false; // 調整中フラグ
 
 // --- IRセンサー関連 ---
 const int IR_pins[12] = { PC0, PC1, PC2, PC3, PC4, PC5, PA4, PA5, PA6, PA7, PB0, PB1 };
@@ -38,15 +28,20 @@ void calc_IR_data() {
   }
   if (sum < 500) {
     IR_angle = NAN;
-    IR_distance = sum;
+    IR_distance = (int)sum;
     return;
   }
   IR_angle = degrees(atan2(y, x));
-  IR_distance = sum;
+  IR_distance = (int)sum;
+}
+
+float normalize_angle(float angle) {
+  while (angle > 180.0f)  angle -= 360.0f;
+  while (angle < -180.0f) angle += 360.0f;
+  return angle;
 }
 
 // --- NeoPixel関連 ---
-#include <Adafruit_NeoPixel.h>
 #define LED_PIN   PA0
 #define LED_COUNT 12
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -54,32 +49,39 @@ Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 uint16_t line_data = 0;
 float current_yaw = 0.0f;
 
-// LED表示の更新関数
 void update_led_display() {
   static RobotMode lastMode = MODE_READY;
+  static bool lastCalib = false;
+  static bool already_cleared = false;
 
-  // --- NORMALモード時の完全消灯処理 ---
-  if (currentMode == MODE_NORMAL) {
-    // モードが切り替わった瞬間だけ消灯命令を送る（通信負荷軽減）
-    if (lastMode != MODE_NORMAL) {
+  // モードや調整状態が変化したかチェック
+  if (currentMode != lastMode || is_calibrating != lastCalib) {
+    already_cleared = false; 
+    lastMode = currentMode;
+    lastCalib = is_calibrating;
+  }
+
+  // 1. 最優先：消灯判定（NORMALモードまたは調整中）
+  if (currentMode == MODE_NORMAL || is_calibrating) {
+    if (!already_cleared) {
       pixels.clear();
       pixels.show();
+      already_cleared = true; 
     }
-    lastMode = currentMode;
-    return; 
+    return; // 消灯中はこれ以降の処理をしない
   }
-  lastMode = currentMode;
 
-  // 試合中以外でも、更新頻度を約30msに制限する
+  // 2. 更新頻度の制限（約30msごと）
   static unsigned long last_led_update = 0;
-  if (millis() - last_led_update < 30) {
-    return;
-  }
+  if (millis() - last_led_update < 30) return;
   last_led_update = millis();
+
+  // 消灯フラグをリセット（表示モードに入っているため、次回NORMAL時に消灯させる準備）
+  already_cleared = false; 
 
   pixels.clear();
 
-  // --- 描画ロジック ---
+  // 3. モード別の表示処理
   if (currentMode == MODE_READY) {
     for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 50, 0));
   }
@@ -97,16 +99,13 @@ void update_led_display() {
         }
         break;
       case DEBUG_BNO: {
-        // --- 桃色（ピンク）に変更 ---
-        float yaw_debug = - current_yaw;
+        float yaw_debug = -current_yaw;
         int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
         pixels.setPixelColor(idx, pixels.Color(50, 0, 30)); 
       } break;
-      case DEBUG_MOTOR: {
-        for(int i=0; i<12; i++) {
-          pixels.setPixelColor(i, pixels.Color(20, 0, 20)); 
-        }
-      } break;
+      case DEBUG_MOTOR:
+        for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(20, 0, 20)); 
+        break;
     }
   }
   else if (currentMode == MODE_STOP) {
@@ -116,12 +115,13 @@ void update_led_display() {
   pixels.show();
 }
 
+// --- 通信関連 ---
 HardwareSerial ballSerial(PA3, PA2);
 
 void receive_from_main(){
   while (ballSerial.available() >= 4) {
     uint8_t header = ballSerial.read();
-    if (header != 0xAA && header != 0xAC && header != 0xAE) continue;
+    if (header != 0xAA && header != 0xAC && header != 0xAE && header != 0xAF) continue;
 
     uint8_t high = ballSerial.read();
     uint8_t low  = ballSerial.read();
@@ -132,77 +132,52 @@ void receive_from_main(){
     uint16_t combined_val = (uint16_t)((high << 8) | low);
 
     switch (header) {
-      case 0xAA: // ラインセンサー
-        line_data = combined_val;
-        break;
-      case 0xAC: // BNO角度
-        current_yaw = (float)((int16_t)combined_val) / 100.0f;
-        break;
-      case 0xAE: // システム状態の更新 (High: RobotMode, Low: DebugMode)
-        currentMode = (RobotMode)high;
-        currentDebug = (DebugMode)low;
-        break;
+      case 0xAA: line_data = combined_val; break;
+      case 0xAC: current_yaw = (float)((int16_t)combined_val) / 100.0f; break;
+      case 0xAE: currentMode = (RobotMode)high; currentDebug = (DebugMode)low; break;
+      case 0xAF: is_calibrating = (high == 1); break;
     }
   }
 }
 
-// ボールデータを2byteにしてメインマイコンへ送信する関数
-// ボールなしでも送信
 void send_to_main_balldata(float angle, int dist) {
-  // 引数 angle:(-180 ~ 180), dist:(0 ~ 7000) 
   uint8_t header = 0xA1;
   uint8_t angle_byte = 0;
   uint8_t status_byte = 0;
 
   if (isnan(angle)) {
-    // ボールなしフラグ0
     angle_byte = 0;
     status_byte = 0; 
   } else {
-    // (-180~180 -> 0~255)
-    angle_byte = (uint8_t)((angle + 180.0f) * (255.0f / 360.0f));
-
-    // 最上位ビット(Bit7)を1にする
-    status_byte = 0x80; 
-    
-    // 残りの7bitに距離を詰める (0~7000 -> 0~127)
+    angle_byte = (uint8_t)((normalize_angle(angle) + 180.0f) * (255.0f / 360.0f));
+    status_byte = 0x80; // ボールありフラグ
     uint8_t dist_7bit = (uint8_t)constrain(dist / 55, 0, 127);
     status_byte |= dist_7bit;
   }
 
   uint8_t checksum = (uint8_t)(header + angle_byte + status_byte);
-
   ballSerial.write(header);
   ballSerial.write(angle_byte);
   ballSerial.write(status_byte);
   ballSerial.write(checksum);
 }
 
-//HardwareSerial PCSerial(PA10, PA9);
-
 void setup() {
-  // 1. まずNeoPixelを初期化
   pixels.begin();
   pixels.setBrightness(70);
   pixels.clear();
-  pixels.show(); // 一旦リセットを反映
-  delay(100);     // 安定するまで少し待つ
-
-  // 2. 青色をセット
+  pixels.show();
+  
   for(int i=0; i<12; i++) {
     pixels.setPixelColor(i, pixels.Color(0, 70, 70));
     pixels.show();
     delay(100);
   }
   
-  // その他の初期化
   ballSerial.begin(115200);
-  //PCSerial.begin(115200);
   for (int i = 0; i < 12; i++) pinMode(IR_pins[i], INPUT);
 
-  delay(1700);// 3秒間待機になるように合わせる
-
-  // 5. 消灯
+  delay(800);
   pixels.clear();
   pixels.show();
 }
@@ -211,27 +186,18 @@ void loop() {
   calc_IR_data();
   receive_from_main();
 
-  // 10ms (秒間100回) ごとに送信する設定
-  static unsigned long last_send_time = 0;
-  if (millis() - last_send_time >= 10) { 
-    send_to_main_balldata(IR_angle, IR_distance);
-    last_send_time = millis();
+  // --- 送信条件の判定 ---
+  // NORMALモード時、または DEBUGモードかつBALLデバッグ選択時のみメインへ送信
+  bool should_send = (currentMode == MODE_NORMAL) || (currentMode == MODE_DEBUG && currentDebug == DEBUG_BALL);
+
+  if (should_send) {
+    static unsigned long last_send_time = 0;
+    if (millis() - last_send_time >= 10) { 
+      send_to_main_balldata(IR_angle, IR_distance);
+      last_send_time = millis();
+    }
   }
 
-  update_led_display(); // モードに合わせたLED表示
+  update_led_display();
   delay(1);
 }
-
-
-
-/* メモ */
-//IR_distance は (0 ~ 7000ほど)
-//ボールなしで100から200
-//ボール遠いかつ遮蔽ありで500あたり
-//ボール遠いかつ遮蔽なしで2000あたり
-//ボール中くらいで3000遮蔽ありで1300あたり
-//以上の結果から
-//IR_distanceが500以上1000未満でボールあり遮蔽あり
-//IR_distanceが1000以上4000未満で遠~中くらいの距離
-//IR_distanceが4000以上で至近距離
-//としてもいいかも？
