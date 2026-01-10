@@ -27,6 +27,10 @@ enum DebugMode {
 RobotMode currentMode = MODE_READY; 
 DebugMode currentDebug = DEBUG_BNO;
 
+// フィールド復帰用の管理変数
+float prev_field_angle = -999.0f; // 前回のフィールド方向（初期値は無効値）
+bool is_field_out = false; // 半分以上外側に出ているか否か
+
 // BNO055関連
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
@@ -71,7 +75,7 @@ float BNO_get_yaw() {
 }
 
 // モーター関連
-#define M_MAX 200.0f
+#define M_MAX 250.0f
 const int motor_pins[8] = {//ピン配置の定義
   //M1からM4まで (PWM, GPIO) の順番
   PA8, PC0, PA0, PC1, PA1, PC2, PA6, PC3
@@ -149,10 +153,26 @@ void Mspin(float spn_rate){
   M4move(spn_rate * M_MAX);
 }
 
+// 姿勢制御込みの移動関数
+void Mmove_with_spin(float angle, float spd_rate, float sisei_out) {
+  // 基本の移動スピードを計算
+  float m1 = sin(degtorad(angle - 45.0f))  * spd_rate;
+  float m2 = sin(degtorad(angle - 135.0f)) * spd_rate;
+  float m3 = sin(degtorad(angle - 225.0f)) * spd_rate;
+  float m4 = sin(degtorad(angle - 315.0f)) * spd_rate;
+
+  // 全モーターに姿勢制御の回転成分(sisei_out)を加算
+  // sisei_outが正なら時計回り、負なら反時計回りの力が加わる
+  M1move((m1 + sisei_out) * M_MAX);
+  M2move((m2 + sisei_out) * M_MAX);
+  M3move((m3 + sisei_out) * M_MAX);
+  M4move((m4 + sisei_out) * M_MAX);
+}
+
 //姿勢(PID)制御関連
-#define P_GAIN 4.0f
-#define I_GAIN 1.0f
-#define D_GAIN 0.1f
+#define P_GAIN 2.0f
+#define I_GAIN 2.0f
+#define D_GAIN 0.3f
 #define I_LIMIT 50.0f       // アンチワインドアップ（積分の最大値）
 #define OUTPUT_LIMIT 1.0f  // 出力の最大値（M_MAXに対する割合）
 float current_yaw = 0.0f;  // 現在のヨー角(Global)
@@ -192,7 +212,62 @@ void receive_from_line() {
     }
   }
 }
+// 12個のラインセンサーからフィールド中央方向を計算する（180度反転アルゴリズム対応）
+float calculate_field_angle(uint16_t mask) {
+  mask &= 0x0FFF; // 下位12ビット(0-11)を使用
+  if (mask == 0) return NAN;
 
+  int on_pins[12];
+  int sum_pin = 0;
+
+  // 1. 反応しているピンを抽出
+  for (int i = 0; i < 12; i++) {
+    if (mask & (1 << i)) {
+      on_pins[sum_pin++] = i;
+    }
+  }
+
+  // 2. 最大の隙間（暫定のフィールド中央）を探す
+  int max_kankaku = 0;
+  int idxmax = 0;
+  for (int i = 0; i < sum_pin; i++) {
+    int kankaku = (i < sum_pin - 1) ? (on_pins[i + 1] - on_pins[i]) : (on_pins[0] + 12 - on_pins[i]);
+    if (kankaku > max_kankaku) {
+      max_kankaku = kankaku;
+      idxmax = i;
+    }
+  }
+
+  // 3. 隙間の中央から計算した「今の方向」
+  float target_pin = (float)on_pins[idxmax] + (float)max_kankaku * 0.5f;
+  float current_field_angle = normalize_angle(target_pin * 30.0f);
+
+  // 4. 180度反転（ライン突き抜け）の検知ロジック
+  if (prev_field_angle > -360.0f) { // 前回のデータがある場合
+    // 前回の方向と今回の方向の差を計算
+    float diff = abs(normalize_angle(current_field_angle - prev_field_angle));
+
+    // 差が180度付近（110〜250度）なら、ラインを跨いで外に出たと判定
+    if (diff > 110.0f && diff < 250.0f) {
+      is_field_out = true;
+    } 
+    // 逆に差が小さいなら、内側に戻ったと判定
+    else if (diff < 70.0f) {
+      is_field_out = false;
+    }
+
+    // 外にいる判定なら、向きを180度反転させてコート中央に向かせる
+    if (is_field_out) {
+      current_field_angle = normalize_angle(current_field_angle + 180.0f);
+    }
+
+    // 動きを滑らかにする（前回の値と70%:30%で混ぜる）
+    current_field_angle = normalize_angle(prev_field_angle * 0.7f + current_field_angle * 0.3f);
+  }
+
+  prev_field_angle = current_field_angle;
+  return current_field_angle;
+}
 
 HardwareSerial ballSerial(PC11, PC10); // RX: PC11, TX: PC10
 // デバッグ用にボールマイコンにラインデータを送信する関数
@@ -299,6 +374,39 @@ void receive_from_ball(){
   }
 }
 
+// ボールの角度(-180~180)を入れると、大回りの回り込み角度(-180~180)を返す
+float get_orbit_angle(float ir_deg) {
+    float abs_ir = abs(ir_deg);
+    float orbit_abs;
+
+    // 回り込みの計算（大回りセッティング）
+    if (abs_ir <= 15.0f) {
+        // 15度以内：真正面(0度)に進む
+        orbit_abs = 0.0f;
+    } 
+    else if (abs_ir <= 40.0f) {
+        // 15度〜40度を 0度〜90度にマッピング
+        // 式：(abs_ir - 15) * (90 - 0) / (40 - 15) + 0
+        orbit_abs = (abs_ir - 15.0f) * 3.6f; 
+    } 
+    else if (abs_ir <= 90.0f) {
+        // 40度〜90度を 90度〜170度にマッピング
+        // 式：(abs_ir - 40) * (170 - 90) / (90 - 40) + 90
+        orbit_abs = (abs_ir - 40.0f) * 1.6f + 90.0f;
+    } 
+    else {
+        // 90度〜180度を 170度〜230度にマッピング
+        // 式：(abs_ir - 90) * (230 - 170) / (180 - 90) + 170
+        orbit_abs = (abs_ir - 90.0f) * 0.666f + 170.0f;
+    }
+
+    // 元の符号（左右）に戻す
+    float result = (ir_deg >= 0) ? orbit_abs : -orbit_abs;
+    
+    // -180~180の範囲に収める（230度などはここで適切なマイナス角に変換される）
+    return normalize_angle(result);
+}
+
 //ボタンピンの定義
 const int button_pins[4]{
   PB0, PB1, PB2, PB4
@@ -330,36 +438,60 @@ void update_buttons() {
 void handle_mode_logic() {
   bool mode_changed = false;
 
-  // ボタン3: メインモード切替 (READY → DEBUG → STOP → READY...)
-  if (btn_pressed[3]) {
-    if (currentMode == MODE_READY)      currentMode = MODE_DEBUG;
-    else if (currentMode == MODE_DEBUG) currentMode = MODE_STOP;
-    else if (currentMode == MODE_STOP)  currentMode = MODE_READY;
-    else if (currentMode == MODE_NORMAL) currentMode = MODE_STOP; // 走行中もボタン3で停止
-    
-    Mstop(); // モード切替時は安全のためモーター停止
-    mode_changed = true;
+  // --- 追加：NORMALモード中、どのボタンを押してもSTOPへ ---
+  if (currentMode == MODE_NORMAL) {
+    if (btn_pressed[0] || btn_pressed[1] || btn_pressed[2] || btn_pressed[3]) {
+      currentMode = MODE_STOP;
+      Mstop();
+      is_field_out = false;
+      prev_field_angle = -999.0f;
+      mode_changed = true;
+      
+      // 以降のボタン処理をスキップ
+      goto sync_and_exit; 
+    }
   }
 
-  // ボタン2: READY状態の時だけ、通常走行(NORMAL)へ移行
+  // ボタン3: メインモード切替
+  if (btn_pressed[3]) {
+    // デバッグモード、かつモーターデバッグ中の時は反応させない
+    if (currentMode == MODE_DEBUG && currentDebug == DEBUG_MOTOR) {
+      // 無効
+    } 
+    else {
+      if (currentMode == MODE_READY)      currentMode = MODE_DEBUG;
+      else if (currentMode == MODE_DEBUG) currentMode = MODE_STOP;
+      else if (currentMode == MODE_STOP)  currentMode = MODE_READY;
+      // (MODE_NORMALからのSTOP移行は冒頭の処理でカバーされるため削除)
+      
+      is_field_out = false;
+      prev_field_angle = -999.0f;
+      Mstop();
+      mode_changed = true;
+    }
+  }
+
+  // ボタン2: 通常走行へ移行
   if (btn_pressed[2]) {
     if (currentMode == MODE_READY) {
       currentMode = MODE_NORMAL;
+      is_field_out = false;
+      prev_field_angle = -999.0f;
       mode_changed = true;
     }
   }
-
-  // ボタン0: デバッグ項目の切り替え (BALL -> LINE -> BNO -> MOTOR)
-  // デバッグモードの時だけ有効
+  
+  // ボタン0: デバッグ項目の切り替え
   if (btn_pressed[0]) {
     if (currentMode == MODE_DEBUG) {
       currentDebug = (DebugMode)((currentDebug + 1) % 4);
-      Mstop(); // デバッグ項目切り替え時も一旦停止
+      Mstop();
       mode_changed = true;
     }
   }
 
-  // モードやデバッグ項目が変わった場合、即座に各マイコンへ通知
+sync_and_exit: // 強制停止時などのジャンプ先
+
   if (mode_changed) {
     for(int i = 0; i < 3; i++) {
       send_to_line_system_status();
@@ -432,22 +564,53 @@ void loop() {
     float d_out = D_GAIN * (error - pre_error) / dt;
     float sisei_output = (p_out + i_out + d_out) / M_MAX;
     if (abs(error) > 0.5f) { // 0.5度以上のズレがあるなら
-        float min_pwm = 0.1f; // モーターが動き出す最小の力（15%など。実機で調整）
+        float min_pwm = 0.05f; // モーターが動き出す最小の力（15%など。実機で調整）
         if (sisei_output > 0) sisei_output += min_pwm;
         else if (sisei_output < 0) sisei_output -= min_pwm;
     }
     if (sisei_output > OUTPUT_LIMIT)  sisei_output = OUTPUT_LIMIT;
     else if (sisei_output < -OUTPUT_LIMIT) sisei_output = -OUTPUT_LIMIT;
-
     
     switch (currentMode) {
       case MODE_READY:
         Mstop();
         break;
-      case MODE_NORMAL:
-        // 試合モード
-        Mmove(0, 1);
-        break;
+      case MODE_NORMAL: {
+        /*
+        float field_angle = calculate_field_angle(line_data);
+
+        if (line_data > 0) {
+          // 【最優先】ライン踏み中：計算されたフィールド中央へ戻る
+          Mmove_with_spin(field_angle, 0.7f, sisei_output);
+        } 
+        else if (is_field_out) {
+          // 【緊急】ラインは踏んでいないが、外に飛び出している判定の時
+          // フィールド中央へ向かって復帰走行（少し遅めの0.5f）
+          Mmove_with_spin(field_angle, 0.8f, sisei_output);
+        }
+        else if (isnan(IR_angle)) {
+          // ボールがない時は停止
+          Mspin(sisei_output);
+        } 
+        else {
+          // 通常の回り込み追従
+          float move_angle = get_orbit_angle(IR_angle);
+          Mmove_with_spin(move_angle, 0.6f, sisei_output);
+        }*/
+
+        // フィールド角度の計算自体は内部状態（is_field_outなど）更新のために実行だけしておく
+        float field_angle = calculate_field_angle(line_data);
+
+        if (isnan(IR_angle)) {
+          // ボールが見えない時はその場で姿勢を維持（回転のみ）
+          Mspin(sisei_output);
+        } 
+        else {
+          // ラインの状態に関わらず、常にボールへの回り込み角度を計算して移動
+          float move_angle = get_orbit_angle(IR_angle);
+          Mmove_with_spin(move_angle, 1.0f, sisei_output);
+        }
+      } break;
       case MODE_DEBUG:
         switch (currentDebug) {
           case DEBUG_BALL:
@@ -508,9 +671,9 @@ void loop() {
         }
         if(currentDebug != DEBUG_MOTOR) Mstop();
         break;
-      case MODE_STOP:
+      case MODE_STOP:{
         Mstop();
-        break;
+      } break;
     }
 
     pre_error = error;

@@ -56,15 +56,21 @@ float current_yaw = 0.0f;
 
 // LED表示の更新関数
 void update_led_display() {
-  // 試合モード(NORMAL)の時は、通信速度を最優先するため、LED更新自体をスキップする
-  // もし試合中に「ボールの方向だけ出したい」なら、ここを外して
-  // 下のタイマー処理で頻度を落とすのがおすすめです。
+  static RobotMode lastMode = MODE_READY;
+
+  // --- NORMALモード時の完全消灯処理 ---
   if (currentMode == MODE_NORMAL) {
+    // モードが切り替わった瞬間だけ消灯命令を送る（通信負荷軽減）
+    if (lastMode != MODE_NORMAL) {
+      pixels.clear();
+      pixels.show();
+    }
+    lastMode = currentMode;
     return; 
   }
+  lastMode = currentMode;
 
-  // 試合中以外でも、毎ループ show() を呼ぶのは重いので、
-  // 約30ms（秒間30回）に制限する
+  // 試合中以外でも、更新頻度を約30msに制限する
   static unsigned long last_led_update = 0;
   if (millis() - last_led_update < 30) {
     return;
@@ -82,23 +88,23 @@ void update_led_display() {
       case DEBUG_BALL:
         if (!isnan(IR_angle)) {
           int idx = (int)(round(IR_angle / 30.0f) + 12) % 12;
-          pixels.setPixelColor(idx, pixels.Color(70, 0, 0));
+          pixels.setPixelColor(idx, pixels.Color(50, 0, 0));
         }
         break;
       case DEBUG_LINE:
         for (int i = 0; i < 12; i++) {
-          if (line_data & (1 << i)) pixels.setPixelColor(i, pixels.Color(70, 70, 70));
+          if (line_data & (1 << i)) pixels.setPixelColor(i, pixels.Color(50, 50, 50));
         }
         break;
       case DEBUG_BNO: {
+        // --- 桃色（ピンク）に変更 ---
         float yaw_debug = - current_yaw;
         int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
-        pixels.setPixelColor(idx, pixels.Color(0, 70, 0));
+        pixels.setPixelColor(idx, pixels.Color(50, 0, 30)); 
       } break;
       case DEBUG_MOTOR: {
-        // 12個すべてを薄い紫で点灯
         for(int i=0; i<12; i++) {
-          pixels.setPixelColor(i, pixels.Color(10, 0, 10)); 
+          pixels.setPixelColor(i, pixels.Color(20, 0, 20)); 
         }
       } break;
     }
@@ -184,7 +190,7 @@ void setup() {
 
   // 2. 青色をセット
   for(int i=0; i<12; i++) {
-    pixels.setPixelColor(i, pixels.Color(0, 100, 100));
+    pixels.setPixelColor(i, pixels.Color(0, 70, 70));
     pixels.show();
     delay(100);
   }
