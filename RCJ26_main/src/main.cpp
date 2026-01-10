@@ -8,6 +8,9 @@ enum DebugMode { DEBUG_BALL, DEBUG_LINE, DEBUG_BNO, DEBUG_MOTOR };
 RobotMode currentMode = MODE_READY; 
 DebugMode currentDebug = DEBUG_BNO;
 
+// モードスロット管理
+int normalModeIndex = 0; // 0~11
+
 // キャリブレーション管理
 bool is_line_calibrating = false;
 float bno_offset = 0.0f; // BNOの0点オフセット用
@@ -90,6 +93,11 @@ void send_calib_signal(bool active) {
   }
 }
 
+// ボールマイコンへ現在のスロット番号(LED点滅用)を送信
+void send_led_mode() {
+  send_packet(ballSerial, 0xAD, (uint8_t)normalModeIndex, 0);
+}
+
 // --- モーター制御 ---
 #define M_MAX 250.0f
 const int motor_pins[8] = { PA8, PC0, PA0, PC1, PA1, PC2, PA6, PC3 };
@@ -133,6 +141,25 @@ void Mmove_with_spin(float angle, float spd_rate, float sisei_out) {
   M4move((m4 + sisei_out) * M_MAX);
 }
 
+void Mmove(float angle, float spd_rate){
+  // 移動方向（angle）をラジアンに変換
+  // モーターの配置に合わせて -45度 オフセット
+  float rad = (angle - 45.0f) * PI / 180.0f;
+
+  // 各車輪の速度計算
+  // 45度、135度、225度、315度に配置されたオムニホイールの基本式
+  float m1 = sin(rad) * spd_rate;
+  float m2 = sin(rad - PI/2.0f) * spd_rate;
+  float m3 = sin(rad - PI) * spd_rate;
+  float m4 = sin(rad - 3.0f*PI/2.0f) * spd_rate;
+
+  // モーター出力（回転成分を加えない純粋な移動）
+  M1move(m1 * M_MAX);
+  M2move(m2 * M_MAX);
+  M3move(m3 * M_MAX);
+  M4move(m4 * M_MAX);
+}
+
 void Mspin(float spn_rate) {
   M1move(spn_rate * M_MAX); M2move(spn_rate * M_MAX);
   M3move(spn_rate * M_MAX); M4move(spn_rate * M_MAX);
@@ -142,11 +169,32 @@ void Mspin(float spn_rate) {
 const int button_pins[4] = { PB0, PB1, PB2, PB4 };
 bool btn_pressed[4] = {false};
 void update_buttons() {
-  static bool last_state[4] = {false};
+  static bool last_raw_state[4] = {false};     // 前回の生のピン状態
+  static bool stable_state[4] = {false};       // 確定したボタンの状態
+  static unsigned long last_debounce_time[4] = {0};
+  const unsigned long debounce_delay = 20;     // 20ms安定していたら確定
+
   for (int i = 0; i < 4; i++) {
-    bool now = digitalRead(button_pins[i]);
-    btn_pressed[i] = (now == HIGH && last_state[i] == LOW);
-    last_state[i] = now;
+    bool current_raw = digitalRead(button_pins[i]);
+    btn_pressed[i] = false; // 毎ループ初期化
+
+    // ピンの状態が変化した（ノイズか押し始め）
+    if (current_raw != last_raw_state[i]) {
+      last_debounce_time[i] = millis();
+    }
+
+    // 最後に状態が変わってから debounce_delay 以上経過している場合
+    if ((millis() - last_debounce_time[i]) > debounce_delay) {
+      // 確定した状態が変わった場合
+      if (current_raw != stable_state[i]) {
+        stable_state[i] = current_raw;
+        // 離れた状態から「押された状態」になった瞬間だけ true にする
+        if (stable_state[i] == HIGH) {
+          btn_pressed[i] = true;
+        }
+      }
+    }
+    last_raw_state[i] = current_raw;
   }
 }
 
@@ -185,50 +233,79 @@ void handle_mode_logic() {
   bool mode_changed = false;
   RobotMode nextMode = currentMode;
 
-  // NORMALモードならどのボタンでも停止
+  update_buttons(); // 全ボタンの状態を一括更新
+
+  // --- 1. NORMALモード中の処理 (最優先) ---
   if (currentMode == MODE_NORMAL) {
+    // どのボタンを押しても即座に停止モードへ
     if (btn_pressed[0] || btn_pressed[1] || btn_pressed[2] || btn_pressed[3]) {
-      nextMode = MODE_STOP; mode_changed = true;
+      nextMode = MODE_STOP;
+      mode_changed = true;
+    }
+  } 
+  
+  // --- 2. READYモード中の処理 ---
+  else if (currentMode == MODE_READY) {
+    if (btn_pressed[0]) { // ボタン0: スロット切り替え
+      normalModeIndex = (normalModeIndex + 1) % 12;
+      send_led_mode(); // ボールマイコンへ 0xAD 送信
+    }
+    else if (btn_pressed[2]) { // ボタン2: 走行開始
+      nextMode = MODE_NORMAL;
+      mode_changed = true;
+    }
+    else if (btn_pressed[3]) { // ボタン3: デバッグモードへ
+      nextMode = MODE_DEBUG;
+      mode_changed = true;
     }
   }
 
-  if (!(currentMode == MODE_DEBUG && currentDebug == DEBUG_MOTOR)) {
-    // ボタン1: 調整 (BNOリセット時にもPIDリセット)
-    if (btn_pressed[1] && currentMode == MODE_DEBUG) {
+  // --- 3. DEBUGモード中の処理 ---
+  else if (currentMode == MODE_DEBUG) {
+    // ボタン0: デバッグ項目の切り替え
+    if (btn_pressed[0]) {
+      currentDebug = (DebugMode)((currentDebug + 1) % 4);
+      mode_changed = true;
+    }
+    // ボタン1: キャリブレーション実行
+    else if (btn_pressed[1]) {
       if (currentDebug == DEBUG_LINE) {
         is_line_calibrating = !is_line_calibrating;
         send_calib_signal(is_line_calibrating);
       } else if (currentDebug == DEBUG_BNO) {
         send_calib_signal(true); delay(200);
         bno_offset = BNO_get_raw_yaw();
-        reset_PID(); // キャリブレーション直後の跳ね上がりを防止
+        reset_PID();
         send_calib_signal(false);
       }
     }
-    // ボタン3: モード切替
-    if (btn_pressed[3]) {
-      if (currentMode == MODE_READY) nextMode = MODE_DEBUG;
-      else if (currentMode == MODE_DEBUG) nextMode = MODE_STOP;
-      else if (currentMode == MODE_STOP) nextMode = MODE_READY;
+    // ボタン3: ストップへ戻る
+    else if (btn_pressed[3]) {
+      if (currentDebug == DEBUG_MOTOR) {
+        // モーターデバッグ中なら、ここでは何もしない（loop内のDEBUG_MOTOR処理に任せる）
+      } else {
+        nextMode = MODE_STOP;
+        mode_changed = true;
+      }
+    }
+    // モーターデバッグ時の特殊操作は別途ここで行う（今回は省略）
+  }
+
+  // --- 4. STOPモード中の処理 ---
+  else if (currentMode == MODE_STOP) {
+    if (btn_pressed[3]) { // ボタン3: READYへ復帰
+      nextMode = MODE_READY;
       mode_changed = true;
     }
-    // ボタン2: 走行開始
-    if (btn_pressed[2] && currentMode == MODE_READY) { nextMode = MODE_NORMAL; mode_changed = true; }
   }
 
-  // ボタン0: デバッグ項目切替
-  if (btn_pressed[0] && currentMode == MODE_DEBUG) {
-    currentDebug = (DebugMode)((currentDebug + 1) % 4);
-    mode_changed = true;
-  }
-
+  // --- 5. モード変更の確定と事後処理 ---
   if (mode_changed) {
-    // モードが変わる瞬間に一度だけPIDをリセット
-    // 特にREADYやSTOPから他へ移る際、古い誤差を捨てる
     reset_PID();
     currentMode = nextMode;
     Mstop();
-    send_system_status();
+    send_system_status(); // 0xAE 送信
+    send_led_mode();      // 0xAD 送信（ボール側LEDを最新にする）
   }
 }
 
@@ -324,7 +401,6 @@ void setup() {
 }
 
 void loop() {
-  update_buttons();
   handle_mode_logic();
   receive_from_line();
   receive_from_ball();
@@ -356,23 +432,18 @@ void loop() {
       Mstop();
       break;
     case MODE_NORMAL: {
-
-      // --- ラインセンサーの反応を確認 ---
-      float avoid_angle = calculate_field_angle(line_data);
-
-      if (line_data > 0) {
-        Mmove_with_spin(avoid_angle, 1.0f, sisei_output);
-      } 
-      else {
-        // --- 2. 通常走行（ボール追従） ---
-        // ラインを踏んでいない場合のみ実行
-        if (isnan(IR_angle)) {
-          // ボールが見えない時はその場で回転して姿勢維持
-          Mspin(sisei_output);
-        } else {
-          // ボールがある時は回り込み計算を行い、姿勢制御を混ぜて走行
-          Mmove_with_spin(get_orbit_angle(IR_angle), 1.0f, sisei_output);
-        }
+      switch (normalModeIndex){
+        case 0: {
+          //モード0
+          Mmove(0.0, 1.0);
+        } break;
+        case 1: {
+          //モード1
+           Mmove(180.0, 1.0);
+        } break;
+        default:
+          Mstop();
+          break;
       }
     } break;
     case MODE_DEBUG:
@@ -444,4 +515,5 @@ void loop() {
       Mstop();
       break;
   }
+  delay(1);
 }

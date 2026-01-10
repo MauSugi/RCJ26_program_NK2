@@ -9,6 +9,8 @@ enum DebugMode { DEBUG_BALL, DEBUG_LINE, DEBUG_BNO, DEBUG_MOTOR };
 RobotMode currentMode = MODE_READY; 
 DebugMode currentDebug = DEBUG_BALL;
 bool is_calibrating = false; // 調整中フラグ
+int selectedSlot = 0; // 0~11
+
 
 // --- IRセンサー関連 ---
 const int IR_pins[12] = { PC0, PC1, PC2, PC3, PC4, PC5, PA4, PA5, PA6, PA7, PB0, PB1 };
@@ -83,7 +85,26 @@ void update_led_display() {
 
   // 3. モード別の表示処理
   if (currentMode == MODE_READY) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+    // --- READYモード：指定されたスロットのみ点滅、他は緑点灯 ---
+    static unsigned long last_blink = 0;
+    static bool blink_state = true;
+    
+    // 200msごとに点滅状態を反転
+    if (millis() - last_blink > 500) {
+      blink_state = !blink_state;
+      last_blink = millis();
+    }
+
+    for(int i=0; i<12; i++) {
+      if (i == selectedSlot) {
+        // 選択スロット：blink_stateがtrueの時だけ緑、falseの時は消灯（点滅）
+        if (blink_state) pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+        else             pixels.setPixelColor(i, pixels.Color(0, 0, 0));
+      } else {
+        // それ以外：常時緑
+        pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+      }
+    }
   }
   else if (currentMode == MODE_DEBUG) {
     switch (currentDebug) {
@@ -118,10 +139,10 @@ void update_led_display() {
 // --- 通信関連 ---
 HardwareSerial ballSerial(PA3, PA2);
 
-void receive_from_main(){
+void receive_from_main() {
   while (ballSerial.available() >= 4) {
     uint8_t header = ballSerial.read();
-    if (header != 0xAA && header != 0xAC && header != 0xAE && header != 0xAF) continue;
+    if (header != 0xAA && header != 0xAC && header != 0xAE && header != 0xAF && header != 0xAD) continue;
 
     uint8_t high = ballSerial.read();
     uint8_t low  = ballSerial.read();
@@ -136,6 +157,7 @@ void receive_from_main(){
       case 0xAC: current_yaw = (float)((int16_t)combined_val) / 100.0f; break;
       case 0xAE: currentMode = (RobotMode)high; currentDebug = (DebugMode)low; break;
       case 0xAF: is_calibrating = (high == 1); break;
+      case 0xAD: selectedSlot = (int)high; break; // スロット番号を保存
     }
   }
 }
