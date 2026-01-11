@@ -97,7 +97,8 @@ void loop() {
 
   for (int i = 0; i < 12; i++) {
     line_analog_data[i] = analogRead(line_pins[i]);
-
+    //Serial.print(line_analog_data[i]);
+    //Serial.print(" ");
     if (is_calibrating) {
       // 調整モード中：最大値と最小値を記録し続ける
       if (line_analog_data[i] > line_MAX[i]) line_MAX[i] = line_analog_data[i];
@@ -109,6 +110,7 @@ void loop() {
       }
     }
   }
+  //Serial.println();
 
   // 送信処理（調整中は送信しない、または現在の判定を送る）
   if (!is_calibrating) {

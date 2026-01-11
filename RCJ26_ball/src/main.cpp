@@ -11,7 +11,6 @@ DebugMode currentDebug = DEBUG_BALL;
 bool is_calibrating = false; // 調整中フラグ
 int selectedSlot = 0; // 0~11
 
-
 // --- IRセンサー関連 ---
 const int IR_pins[12] = { PC0, PC1, PC2, PC3, PC4, PC5, PA4, PA5, PA6, PA7, PB0, PB1 };
 int IR_analog_data[12];

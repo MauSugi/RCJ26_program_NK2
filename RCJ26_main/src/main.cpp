@@ -19,6 +19,10 @@ float bno_offset = 0.0f; // BNOの0点オフセット用
 float prev_field_angle = -999.0f;
 bool is_field_out = false;
 
+// ライン回避の補完用
+float last_valid_line_dir = NAN; 
+unsigned long last_line_time = 0; // ラインを最後に検知した時刻
+
 // --- BNO055関連 ---
 #include <Wire.h>
 #define BNO055_ADDR 0x28
@@ -102,6 +106,36 @@ void send_led_mode() {
 #define M_MAX 250.0f
 const int motor_pins[8] = { PA8, PC0, PA0, PC1, PA1, PC2, PA6, PC3 };
 
+// モーターの正転方向がm1とm2だけ機体間でちがう
+// 機体黒　
+void M1move(float speed) {
+  speed = round(constrain(speed, -M_MAX, M_MAX));
+  if (speed > 0) { digitalWrite(motor_pins[1], HIGH); analogWrite(motor_pins[0], (int)speed); }
+  else if (speed < 0) { digitalWrite(motor_pins[1], LOW); analogWrite(motor_pins[0], (int)-speed); }
+  else analogWrite(motor_pins[0], 0);
+}
+void M2move(float speed) {
+  speed = round(constrain(speed, -M_MAX, M_MAX));
+  if (speed > 0) { digitalWrite(motor_pins[3], LOW); analogWrite(motor_pins[2], (int)speed); }
+  else if (speed < 0) { digitalWrite(motor_pins[3], HIGH); analogWrite(motor_pins[2], (int)-speed); }
+  else analogWrite(motor_pins[2], 0);
+}
+void M3move(float speed) {
+  speed = round(constrain(speed, -M_MAX, M_MAX));
+  if (speed > 0) { digitalWrite(motor_pins[5], LOW); analogWrite(motor_pins[4], (int)speed); }
+  else if (speed < 0) { digitalWrite(motor_pins[5], HIGH); analogWrite(motor_pins[4], (int)-speed); }
+  else analogWrite(motor_pins[4], 0);
+}
+void M4move(float speed) {
+  speed = round(constrain(speed, -M_MAX, M_MAX));
+  if (speed > 0) { digitalWrite(motor_pins[7], HIGH); analogWrite(motor_pins[6], (int)speed); }
+  else if (speed < 0) { digitalWrite(motor_pins[7], LOW); analogWrite(motor_pins[6], (int)-speed); }
+  else analogWrite(motor_pins[6], 0);
+}
+
+
+//機体白
+/*
 void M1move(float speed) {
   speed = round(constrain(speed, -M_MAX, M_MAX));
   if (speed > 0) { digitalWrite(motor_pins[1], LOW); analogWrite(motor_pins[0], (int)speed); }
@@ -126,6 +160,7 @@ void M4move(float speed) {
   else if (speed < 0) { digitalWrite(motor_pins[7], LOW); analogWrite(motor_pins[6], (int)-speed); }
   else analogWrite(motor_pins[6], 0);
 }
+*/
 
 void Mstop() { M1move(0); M2move(0); M3move(0); M4move(0); }
 
@@ -198,20 +233,55 @@ void update_buttons() {
   }
 }
 
-// --- 回り込み計算 ---
-float get_orbit_angle(float ir_deg) {
+// --- 回り込み計算 (距離を考慮) ---
+float get_orbit_angle(float ir_deg, int ir_dist) {// 角度と距離が引数
+  //ir_dist が　定義：500以上でボールあり
+  //ir_dist が　4000以上か以下かで回り込みの関数を変えたい
   float abs_ir = abs(ir_deg);
   float orbit_abs;
-  if (abs_ir <= 15.0f) orbit_abs = 0.0f;
-  else if (abs_ir <= 40.0f) orbit_abs = (abs_ir - 15.0f) * 3.6f;
-  else if (abs_ir <= 90.0f) orbit_abs = (abs_ir - 40.0f) * 1.6f + 90.0f;
-  else orbit_abs = (abs_ir - 90.0f) * 0.666f + 170.0f;
+
+  // --- 1. 近距離（ir_dist >= 4000）の回り込みロジック ---
+  // ボールが近いため、より早く・大きく回り込んでシュート体制を作る
+  if (ir_dist >= 4000) {
+    if (abs_ir <= 10.0f) orbit_abs = 0.0f; // 正面付近は直進
+    else if (abs_ir <= 30.0f) orbit_abs = (abs_ir - 10.0f) * 4.5f; // 急激に回り込む
+    else if (abs_ir <= 80.0f) orbit_abs = (abs_ir - 30.0f) * 1.0f + 90.0f; 
+    else orbit_abs = (abs_ir - 80.0f) * 0.8f + 140.0f; // 真後ろ付近
+  }
+  // --- 2. 遠距離（ir_dist < 4000）の回り込みロジック (既存コードを維持) ---
+  else {
+    // --- 遠距離：近づくこと優先（より緩やかに変更） ---
+    if (abs_ir <= 30.0f) {
+      // 30度までは直進に近い形でボールへ向かう
+      orbit_abs = abs_ir * 0.5f; 
+    }
+    else if (abs_ir <= 90.0f) {
+      // 横方向でも「斜め前」程度に抑えて距離を詰める
+      orbit_abs = (abs_ir - 30.0f) * 1.2f + 15.0f; 
+    }
+    else {
+      // 真後ろにボールがあっても、大きく回り込まずにまずは引き付ける
+      orbit_abs = (abs_ir - 90.0f) * 0.5f + 87.0f;
+    }
+  }
+
   return normalize_angle((ir_deg >= 0) ? orbit_abs : -orbit_abs);
 }
 
+// --- 回り込み計算 ---
+float mawarikomi(float ir_deg) {// 角度が引数
+  float abs_ir = abs(ir_deg);
+  float orbit_abs;
+  if (abs_ir <= 10.0f) orbit_abs = 0.0f; // 正面付近は直進
+  else if (abs_ir <= 30.0f) orbit_abs = (abs_ir - 10.0f) * 4.5f; // 急激に回り込む
+  else if (abs_ir <= 80.0f) orbit_abs = (abs_ir - 30.0f) * 1.0f + 90.0f; 
+  else orbit_abs = (abs_ir - 80.0f) * 0.8f + 140.0f; // 真後ろ付近
+  return normalize_angle((ir_deg >= 0) ? orbit_abs : -orbit_abs);
+}
 
 // --- メインループ変数 ---
 float IR_angle = NAN;
+float IR_distance = 0;
 uint16_t line_data = 0;
 float current_yaw = 0.0f;
 float pre_error = 0.0f, integral = 0.0f;
@@ -227,7 +297,6 @@ void reset_PID() {
   pre_error = 0.0f;
   sisei_output = 0.0f; // 現在の出力値もクリア
 }
-
 
 void handle_mode_logic() {
   bool mode_changed = false;
@@ -309,7 +378,7 @@ void handle_mode_logic() {
   }
 }
 
-
+/*
 // 12個のラインセンサーからフィールド中央方向を計算する（180度反転アルゴリズム対応）
 float calculate_field_angle(uint16_t mask) {
   mask &= 0x0FFF; // 下位12ビット(0-11)を使用
@@ -366,6 +435,47 @@ float calculate_field_angle(uint16_t mask) {
   prev_field_angle = current_field_angle;
   return current_field_angle;
 }
+*/
+
+
+// 12個のラインセンサーの反応から、ラインがある方向（重心）を計算する
+// 戻り値: ラインがある方向(deg)。反応がない場合は NAN
+float calculate_line_vector_angle(uint16_t mask) {
+  mask &= 0x0FFF;
+  if (mask == 0) return NAN;
+
+  float vx = 0.0f;
+  float vy = 0.0f;
+
+  for (int i = 0; i < 12; i++) {
+    if (mask & (1 << i)) {
+      float angle_rad = (i * 30.0f) * PI / 180.0f;
+      vx += cos(angle_rad);
+      vy += sin(angle_rad);
+    }
+  }
+
+  float final_mag = sqrt(vx * vx + vy * vy);
+
+  // ベクトルがしっかり出ている（相殺されていない）場合
+  if (final_mag > 0.4f) {
+    float line_dir = atan2(vy, vx) * 180.0f / PI;
+    last_valid_line_dir = normalize_angle(line_dir); // 有効な値を保存
+    last_line_time = millis(); // 検知時刻を更新
+    return last_valid_line_dir;
+  } 
+  
+  // 相殺(3番+9番など)が起きたが、前回のデータが新しい(500ms以内)ならそれを使う
+  if (!isnan(last_valid_line_dir) && (millis() - last_line_time < 500)) {
+    return last_valid_line_dir;
+  }
+
+  return NAN;
+
+  // 合成ベクトルの角度を計算（これが「ラインの塊がある方向」）
+  float line_dir = atan2(vy, vx) * 180.0f / PI;
+  return normalize_angle(line_dir);
+}
 
 // サブマイコンからの受信関数(既存の receive_from_line/ball を想定)
 void receive_from_line() {
@@ -377,13 +487,30 @@ void receive_from_line() {
 }
 
 void receive_from_ball() {
+  // バッファに4バイト以上ある間ループ
   while (ballSerial.available() >= 4) {
+    // ヘッダーが 0xA1 か確認
     if (ballSerial.read() != 0xA1) continue;
-    uint8_t ab = ballSerial.read(); uint8_t sb = ballSerial.read(); uint8_t c = ballSerial.read();
+
+    uint8_t ab = ballSerial.read(); // 角度バイト (angle_byte)
+    uint8_t sb = ballSerial.read(); // ステータス/距離バイト (status_byte)
+    uint8_t c  = ballSerial.read(); // チェックサム (checksum)
+
+    // チェックサムの検証
     if ((uint8_t)(0xA1 + ab + sb) == c) {
-      if (!(sb & 0x80)) { IR_angle = NAN; }
+      // ボールありフラグ（最上位ビット）の確認
+      if (!(sb & 0x80)) { 
+        IR_angle = NAN; 
+        IR_distance = 0; // ボールがない場合は距離もリセット
+      } 
       else {
+        // 1. 角度の復元 (-180度 〜 180度)
         IR_angle = (float)ab * (360.0f / 255.0f) - 180.0f;
+
+        // 2. 距離の復元
+        // 下位7ビットを取り出し、送信時の逆算（* 55）を行う
+        uint8_t dist_7bit = sb & 0x7F; 
+        IR_distance = (int)dist_7bit * 55;
       }
     }
   }
@@ -427,20 +554,137 @@ void loop() {
   sisei_output = constrain(sisei_output, -1.0f, 1.0f);
   pre_error = error;
 
+  // モード切替
   switch (currentMode) {
     case MODE_READY:
       Mstop();
       break;
     case MODE_NORMAL: {
       switch (normalModeIndex){
+        
+        /* --アタッカープログラム-- */
         case 0: {
-          //モード0
-          Mmove(0.0, 1.0);
+
+    float vx = 0.0f;
+    float vy = 0.0f;
+
+    // 1. ボールへ向かうベクトル
+    if (!isnan(IR_angle)) {
+        float ball_rad = mawarikomi(IR_angle) * PI / 180.0f;
+        vx += cos(ball_rad);
+        vy += sin(ball_rad);
+    }
+
+    // 2. ラインから「離れる」ベクトル
+    float line_dir = calculate_line_vector_angle(line_data);
+    if (!isnan(line_dir)) {
+        // ラインがある方向 (line_dir) の真逆 (+180度) が逃げる方向
+        float escape_rad = (line_dir + 180.0f) * PI / 180.0f;
+        
+        // 回避の強さを設定。
+        // ラインに近い（反応センサー数が多い）ほど強く反発させるなら、
+        // 重みを固定にせず、ベクトル長を利用するのもアリです。
+        float avoid_weight = 2.0f;
+        vx += cos(escape_rad) * avoid_weight;
+        vy += sin(escape_rad) * avoid_weight;
+    }
+
+    // 3. 移動実行
+    float final_spd = sqrt(vx * vx + vy * vy);
+    
+    float max_val = 1.0f;
+    if (final_spd > max_val) {
+    vx = (vx / final_spd) * max_val;
+    vy = (vy / final_spd) * max_val;
+    final_spd = max_val;
+
+    }
+    if (final_spd > 0.1f) {
+        float final_angle = atan2(vy, vx) * 180.0f / PI;
+        float move_spd = (final_spd > 1.0f) ? 1.0f : final_spd;
+        Mmove_with_spin(final_angle, move_spd, sisei_output);
+    } else {
+        Mspin(sisei_output);
+    }
+      
         } break;
+
+        /* --キーパープログラム-- */
         case 1: {
-          //モード1
-           Mmove(180.0, 1.0);
+
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float keeper_spd = 0.8f;
+
+    // 1. ボールの左右位置に応じた横移動 (vx)
+    if (!isnan(IR_angle)) {
+        if (IR_angle > 10.0f) vx = cos(90.0f * PI / 180.0f);
+        else if (IR_angle < -10.0f) vx = cos(-90.0f * PI / 180.0f);
+    }
+
+    // 2. ラインベクトルを使った位置保持 (vy)
+    float line_dir = calculate_line_vector_angle(line_data);
+
+    if (!isnan(line_dir)) {
+        // 検知しているラインの方向へ吸着する
+        float line_rad = line_dir * PI / 180.0f;
+        vx += cos(line_rad) * 1.0f; 
+        vy += sin(line_rad) * 1.0f;
+    } 
+    else if (!isnan(last_valid_line_dir) && (millis() - last_line_time < 3000)) {
+        // 最後に反応があったラインの方向へ向かって復帰を試みる
+        float last_line_rad = last_valid_line_dir * PI / 180.0f;
+        vx += cos(last_line_rad) * 1.0f;
+        vy += sin(last_line_rad) * 1.0f;
+    }
+    else {
+        // 完全に迷子なので、ラインに触れるまでゆっくり後退する
+        vy = -0.8f; 
+        vx = 0.0f; // 横移動を止めて後退を優先
+    }
+
+    // 3. 移動実行
+    float final_spd = sqrt(vx * vx + vy * vy);
+    if (final_spd > 0.1f) {
+        float final_angle = atan2(vy, vx) * 180.0f / PI;
+        Mmove_with_spin(final_angle, keeper_spd, sisei_output);
+    } else {
+        Mspin(sisei_output);
+    }
+
         } break;
+        
+        /* --ラインセンサーなしの回り込み-- */
+        case 2: {
+
+    float vx = 0.0f;
+    float vy = 0.0f;
+
+    // 1. ボールへ向かうベクトル
+    if (!isnan(IR_angle)) {
+        float ball_rad = get_orbit_angle(IR_angle, IR_distance) * PI / 180.0f;
+        vx += cos(ball_rad);
+        vy += sin(ball_rad);
+    }
+
+    // 3. 移動実行
+    float final_spd = sqrt(vx * vx + vy * vy);
+    float max_val = 1.0f;
+    if (final_spd > max_val) {
+    vx = (vx / final_spd) * max_val;
+    vy = (vy / final_spd) * max_val;
+    final_spd = max_val;
+    }
+    if (final_spd > 0.1f) {
+        float final_angle = atan2(vy, vx) * 180.0f / PI;
+        float move_spd = (final_spd > 1.0f) ? 1.0f : final_spd;
+        Mmove_with_spin(final_angle, move_spd, sisei_output);
+    } else {
+        Mspin(sisei_output);
+    }
+
+        } break;
+
         default:
           Mstop();
           break;
