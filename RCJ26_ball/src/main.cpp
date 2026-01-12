@@ -7,7 +7,7 @@ enum RobotMode { MODE_READY, MODE_NORMAL, MODE_DEBUG, MODE_STOP };
 enum DebugMode { DEBUG_BALL, DEBUG_LINE, DEBUG_BNO, DEBUG_MOTOR };
 
 RobotMode currentMode = MODE_READY; 
-DebugMode currentDebug = DEBUG_BALL;
+DebugMode currentDebug = DEBUG_BNO;
 bool is_calibrating = false; // 調整中フラグ
 int selectedSlot = 0; // 0~11
 
@@ -97,11 +97,11 @@ void update_led_display() {
     for(int i=0; i<12; i++) {
       if (i == selectedSlot) {
         // 選択スロット：blink_stateがtrueの時だけ緑、falseの時は消灯（点滅）
-        if (blink_state) pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+        if (blink_state) pixels.setPixelColor(i, pixels.Color(0, 30, 0));
         else             pixels.setPixelColor(i, pixels.Color(0, 0, 0));
       } else {
         // それ以外：常時緑
-        pixels.setPixelColor(i, pixels.Color(0, 50, 0));
+        pixels.setPixelColor(i, pixels.Color(0, 30, 0));
       }
     }
   }
@@ -110,7 +110,7 @@ void update_led_display() {
       case DEBUG_BALL:
         if (!isnan(IR_angle)) {
           int idx = (int)(round(IR_angle / 30.0f) + 12) % 12;
-          pixels.setPixelColor(idx, pixels.Color(50, 0, 0));
+          pixels.setPixelColor(idx, pixels.Color(30, 0, 0));
         }
         break;
       case DEBUG_LINE:
@@ -121,7 +121,7 @@ void update_led_display() {
       case DEBUG_BNO: {
         float yaw_debug = -current_yaw;
         int idx = (int)(round(yaw_debug / 30.0f) + 12) % 12;
-        pixels.setPixelColor(idx, pixels.Color(50, 0, 30)); 
+        pixels.setPixelColor(idx, pixels.Color(30, 0, 20)); 
       } break;
       case DEBUG_MOTOR:
         for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(20, 0, 20)); 
@@ -129,7 +129,7 @@ void update_led_display() {
     }
   }
   else if (currentMode == MODE_STOP) {
-    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(50, 0, 0));
+    for(int i=0; i<12; i++) pixels.setPixelColor(i, pixels.Color(30, 0, 0));
   }
 
   pixels.show();
@@ -190,7 +190,7 @@ void setup() {
   pixels.show();
   
   for(int i=0; i<12; i++) {
-    pixels.setPixelColor(i, pixels.Color(0, 70, 70));
+    pixels.setPixelColor(i, pixels.Color(0, 30, 30));
     pixels.show();
     delay(100);
   }

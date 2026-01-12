@@ -6,7 +6,7 @@ enum RobotMode { MODE_READY, MODE_NORMAL, MODE_DEBUG, MODE_STOP };
 enum DebugMode { DEBUG_BALL, DEBUG_LINE, DEBUG_BNO, DEBUG_MOTOR };
 
 RobotMode currentMode = MODE_READY; 
-DebugMode currentDebug = DEBUG_BNO;
+DebugMode currentDebug = DEBUG_LINE;
 
 // モードスロット管理
 int normalModeIndex = 0; // 0~11
@@ -134,6 +134,7 @@ float check_motor_safety(int id, float speed) {
 
 // モーターの正転方向がm1とm2だけ機体間でちがう
 // 機体黒　
+
 void M1move(float speed) {
   speed = check_motor_safety(0, speed); // 安全装置
   speed = round(constrain(speed, -M_MAX, M_MAX));
@@ -162,6 +163,7 @@ void M4move(float speed) {
   else if (speed < 0) { digitalWrite(motor_pins[7], LOW); analogWrite(motor_pins[6], (int)-speed); }
   else analogWrite(motor_pins[6], 0);
 }
+
 
 //機体白
 /*
@@ -279,68 +281,47 @@ void update_buttons() {
   }
 }
 
-// --- 回り込み計算 (距離を考慮) ---
-float get_orbit_angle(float ir_deg, int ir_dist) {// 角度と距離が引数
-  //ir_dist が　定義：500以上でボールあり
-  //ir_dist が　4000以上か以下かで回り込みの関数を変えたい
-  float abs_ir = abs(ir_deg);
-  float orbit_abs;
+// ヒステリシス状態保持用
+bool is_deep_orbit_mode = false; 
 
-  // --- 1. 近距離（ir_dist >= 4000）の回り込みロジック ---
-  // ボールが近いため、より早く・大きく回り込んでシュート体制を作る
-  if (ir_dist >= 4000) {
-    if (abs_ir <= 10.0f) orbit_abs = 0.0f; // 正面付近は直進
-    else if (abs_ir <= 30.0f) orbit_abs = (abs_ir - 10.0f) * 4.5f; // 急激に回り込む
-    else if (abs_ir <= 80.0f) orbit_abs = (abs_ir - 30.0f) * 1.0f + 90.0f; 
-    else orbit_abs = (abs_ir - 80.0f) * 0.8f + 140.0f; // 真後ろ付近
-  }
-  // --- 2. 遠距離（ir_dist < 4000）の回り込みロジック (既存コードを維持) ---
-  else {
-    // --- 遠距離：近づくこと優先（より緩やかに変更） ---
-    if (abs_ir <= 30.0f) {
-      // 30度までは直進に近い形でボールへ向かう
-      orbit_abs = abs_ir * 0.5f; 
+float mawarikomi(float ir_deg, int ir_dist) {
+    float abs_ir = fabs(ir_deg);
+    float orbit_abs = 0;
+
+    // --- 1. ヒステリシス判定 ---
+    // 4200を超えたら「深い回り込みモード」
+    if (ir_dist > 4200) {
+        is_deep_orbit_mode = true;
+    } 
+    // 3800を下回ったら「浅い回り込みモード」
+    else if (ir_dist < 3800) {
+        is_deep_orbit_mode = false;
     }
-    else if (abs_ir <= 90.0f) {
-      // 横方向でも「斜め前」程度に抑えて距離を詰める
-      orbit_abs = (abs_ir - 30.0f) * 1.2f + 15.0f; 
+
+    // --- 2. 線形補間ロジック ---
+    if (is_deep_orbit_mode) {
+        // 近距離(dist > 4200): (0,0), (15,0), (30,90), (90,180), (180,240)
+        if (abs_ir <= 15.0f)      orbit_abs = 0;
+        else if (abs_ir <= 30.0f) orbit_abs = (abs_ir - 15.0f) * (90.0f - 0.0f) / (30.0f - 15.0f) + 0.0f;
+        else if (abs_ir <= 90.0f) orbit_abs = (abs_ir - 30.0f) * (180.0f - 90.0f) / (90.0f - 30.0f) + 90.0f;
+        else                      orbit_abs = (abs_ir - 90.0f) * (240.0f - 180.0f) / (180.0f - 90.0f) + 180.0f;
+    } else {
+        // 遠距離(dist < 3800): (0,0), (15,0), (30,60), (90,150), (180,210)
+        if (abs_ir <= 15.0f)      orbit_abs = 0;
+        else if (abs_ir <= 30.0f) orbit_abs = (abs_ir - 15.0f) * (60.0f - 0.0f) / (30.0f - 15.0f) + 0.0f;
+        else if (abs_ir <= 90.0f) orbit_abs = (abs_ir - 30.0f) * (150.0f - 60.0f) / (90.0f - 30.0f) + 60.0f;
+        else                      orbit_abs = (abs_ir - 90.0f) * (210.0f - 150.0f) / (180.0f - 90.0f) + 150.0f;
     }
-    else {
-      // 真後ろにボールがあっても、大きく回り込まずにまずは引き付ける
-      orbit_abs = (abs_ir - 90.0f) * 0.5f + 87.0f;
-    }
-  }
 
-  return normalize_angle((ir_deg >= 0) ? orbit_abs : -orbit_abs);
-}
-
-float mawarikomi(float ir_deg) {
-  float abs_ir = fabs(ir_deg);
-  float orbit_abs;
-
-  // 10度までは「0(直進)」ではなく、あえて少しだけ角度をつける(1.0倍)
-  // これにより、ボールが正面付近で左右に振れた時の過剰な反応を抑えます
-  if (abs_ir <= 15.0f) {
-    orbit_abs = abs_ir * 1.5f; 
-  } 
-  else if (abs_ir <= 90.0f) {
-    // 15度(22.5) -> 90度(135) : 係数1.5
-    // 滑らかに接続しつつ、横に逃げるボールをしっかり追う
-    orbit_abs = (abs_ir - 15.0f) * 1.5f + 22.5f;
-  } 
-  else {
-    // 90度(135) -> 180度(180) : 係数0.5
-    // 後ろにあるボールに対しては、回り込みすぎず「引き付ける」
-    orbit_abs = (abs_ir - 90.0f) * 0.5f + 135.0f;
-  }
-
-  // 元の符号（左右）を戻す
-  float result = (ir_deg >= 0) ? orbit_abs : -orbit_abs;
-  return normalize_angle(result);
+    // --- 3. 符号の復元と正規化 ---
+    // ir_degが負なら結果も負にする。その後、-180~180の範囲に正規化。
+    float result = (ir_deg >= 0) ? orbit_abs : -orbit_abs;
+    return normalize_angle(result);
 }
 
 // フィルター用のグローバル変数
-float filted_IR_angle = 0;
+float filted_IR_angle = 0.0f;
+float filted_IR_distance = 0.0f;
 
 // --- メインループ変数 ---
 float IR_angle = NAN;
@@ -399,7 +380,16 @@ void handle_mode_logic() {
       currentDebug = (DebugMode)((currentDebug + 1) % 4);
       mode_changed = true;
     }
-    // ボタン1: キャリブレーション実行
+    
+    // 【特殊ショートカット】ラインキャリブレーション中かつボタン2が押されたらNORMALへ
+    else if (currentDebug == DEBUG_LINE && is_line_calibrating && btn_pressed[2]) {
+        is_line_calibrating = false; // キャリブを終了
+        send_calib_signal(false);    // センサー側に終了を通知
+        nextMode = MODE_NORMAL;      // 試合モードへ
+        mode_changed = true;
+    }
+
+    // ボタン1: キャリブレーション実行（通常操作）
     else if (btn_pressed[1]) {
       if (currentDebug == DEBUG_LINE) {
         is_line_calibrating = !is_line_calibrating;
@@ -420,7 +410,6 @@ void handle_mode_logic() {
         mode_changed = true;
       }
     }
-    // モーターデバッグ時の特殊操作は別途ここで行う（今回は省略）
   }
 
   // --- 4. STOPモード中の処理 ---
@@ -442,41 +431,52 @@ void handle_mode_logic() {
 }
 
 // 12個のラインセンサーの反応から、ラインがある方向（重心）を計算する
-// 戻り値: ラインがある方向(deg)。反応がない、または反応が1つ以下の場合は NAN
+// 戻り値: ラインがある方向(deg)。反応がない場合は、直近100ms以内の履歴を返す。完全にない場合は NAN
 float calculate_line_vector_angle(uint16_t mask) {
   mask &= 0x0FFF;
 
   // --- 1. センサー反応数をカウント ---
   int active_count = __builtin_popcount(mask);
+  unsigned long now = millis();
+  float current_dir = NAN;
 
-  // --- 2. 1個以下の時は「無効」として即座にNANを返す ---
-  // 保持データ(last_valid_line_dir)の更新もしないため、
-  // 呼び出し側(Case 1など)の保持タイマー判定(100ms)に委ねられる
-  if (active_count < 2) {
-    return NAN;
-  }
+  // --- 2. 2個以上反応している場合のみ現在の方向を計算 ---
+  if (active_count >= 2) {
+    float vx = 0.0f;
+    float vy = 0.0f;
 
-  float vx = 0.0f;
-  float vy = 0.0f;
+    for (int i = 0; i < 12; i++) {
+      if (mask & (1 << i)) {
+        float angle_rad = (i * 30.0f) * PI / 180.0f;
+        vx += sin(angle_rad);
+        vy += cos(angle_rad);
+      }
+    }
 
-  for (int i = 0; i < 12; i++) {
-    if (mask & (1 << i)) {
-      float angle_rad = (i * 30.0f) * PI / 180.0f;
-      vx += sin(angle_rad);
-      vy += cos(angle_rad);
+    float final_mag = sqrt(vx * vx + vy * vy);
+
+    // ベクトルが相殺されていない場合のみ有効な方向とする
+    if (final_mag > 0.2f) {
+      current_dir = normalize_angle(atan2(vx, vy) * 180.0f / PI);
+      
+      // 有効な方向が得られたので履歴を更新
+      last_valid_line_dir = current_dir;
+      last_line_time = now;
     }
   }
 
-  float final_mag = sqrt(vx * vx + vy * vy);
-
-  // --- 3. 2個以上反応し、かつベクトルが相殺されていない場合のみ有効 ---
-  if (final_mag > 0.2f) {
-    float line_dir = atan2(vx, vy) * 180.0f / PI; 
-    last_valid_line_dir = normalize_angle(line_dir);
-    last_line_time = millis(); // 「有効な方向」が得られた最終時刻を更新
-    return last_valid_line_dir;
+  // --- 3. 戻り値の判定 ---
+  // 今まさに検知しているならその方向を返す
+  if (!isnan(current_dir)) {
+    return current_dir;
   } 
   
+  // 今は検知していないが、50ms以内なら最後に検知した方向を返す（チャタリング・消失対策）
+  if (!isnan(last_valid_line_dir) && (now - last_line_time < 50)) {
+    return last_valid_line_dir;
+  }
+
+  // それ以外は完全にラインなし
   return NAN;
 }
 
@@ -535,17 +535,26 @@ void loop() {
   receive_from_line();
   receive_from_ball();
 
+  // --- ボールデータのフィルタリング ---
   if (!isnan(IR_angle)) {
+    // 角度のフィルタ（またぎ処理付き）
     if (isnan(filted_IR_angle)) {
-      filted_IR_angle = IR_angle;
-    } else {//またぎの処理
-      float diff = normalize_angle(IR_angle - filted_IR_angle);
-      filted_IR_angle = normalize_angle(filted_IR_angle + diff * 0.5f);
+        filted_IR_angle = IR_angle;
+    } else {
+        float diff = normalize_angle(IR_angle - filted_IR_angle);
+        filted_IR_angle = normalize_angle(filted_IR_angle + diff * 0.5f);
     }
-  } else {
-    // ボールが見えない時はNANにする
+
+    // 距離のフィルタ (0.5 : 0.5)
+    // filted_IR_distance = (前回値 * 0.5) + (今回値 * 0.5)
+    filted_IR_distance = (filted_IR_distance * 0.5f) + ((float)IR_distance * 0.5f);
+
+} else {
+    // ボールを見失った時の処理
     filted_IR_angle = NAN;
-  }
+    // 距離は急に0にせず、必要に応じて維持するか0にする（ここでは0にリセット）
+    filted_IR_distance = 0.0f;
+}
   
   unsigned long cur = micros();
   float dt = (float)(cur - last_micros) / 1000000.0f;
@@ -588,15 +597,15 @@ void loop() {
             if (!isnan(filted_IR_angle)) {
                 last_ball_time = millis(); // ボールが見えている間は常に時刻を更新
                 // 回り込み計算
-                float ball_rad = mawarikomi(filted_IR_angle) * PI / 180.0f;
+                float ball_rad = mawarikomi(filted_IR_angle, filted_IR_distance) * PI / 180.0f;
                 vx += sin(ball_rad) * 1.0f;
                 vy += cos(ball_rad) * 1.0f;
             } 
             else {
-                // ボールが1000ms（1秒）以上見えない場合は自陣方向へ後退
-                if (millis() - last_ball_time > 1000) {
+                // ボールが500ms以上見えない場合は自陣方向へ後退
+                if (millis() - last_ball_time > 500) {
                     vx += 0.0f;
-                    vy += -0.5f; // 後退ベクトル
+                    vy += -1.0f; // 後退ベクトル
                 }
             }
 
@@ -610,12 +619,6 @@ void loop() {
                 vx += sin(escape_rad) * 2.0f;
                 vy += cos(escape_rad) * 2.0f;
             } 
-            else if (!isnan(last_valid_line_dir) && (millis() - last_line_time < 100)) {
-                // 消失直後100msは、最後に検知したライン方向から逃げ続ける
-                float escape_rad = (last_valid_line_dir + 180.0f) * PI / 180.0f;
-                vx += sin(escape_rad) * 2.0f;
-                vy += cos(escape_rad) * 2.0f;
-            }
 
             // 3. 合成ベクトルの正規化と移動実行
             float final_spd = sqrt(vx * vx + vy * vy);
@@ -642,7 +645,95 @@ void loop() {
 
         /* --キーパープログラム-- */
         case 1: {
-           float vx = 0.0f;
+            // 静的変数の定義（case内の先頭に配置し、staticにする）
+            static unsigned long kp_front_start_time = 0;
+            static bool kp_is_charging = false;
+            static bool kp_is_recovering = false;
+            static unsigned long kp_recovery_start_time = 0;
+            static unsigned long last_line_detected_time = 0;
+            bool is_stable_on_line = false;
+
+            float vx = 0.0f;
+            float vy = 0.0f;
+
+            // 1. ライン方向の取得
+            float line_dir = calculate_line_vector_angle(line_data);
+            
+            // --- ライン検知の猶予処理 ---
+            if (!isnan(line_dir)) {
+                last_line_detected_time = millis();
+            }
+            // 200ms以内なら「ライン上にいる」とみなす
+            if (millis() - last_line_detected_time < 200) {
+                is_stable_on_line = true;
+            }
+
+            // 2. 通常のキーパー挙動
+            if (!isnan(line_dir)) {
+                // ライン復帰
+                float line_weight = 0.3f;
+                vx += sin(line_dir * PI / 180.0f) * line_weight;
+                vy += cos(line_dir * PI / 180.0f) * line_weight;
+
+                // 並行移動
+                if (!isnan(filted_IR_angle)) {
+                    float relative_ball_angle = normalize_angle(filted_IR_angle - line_dir);
+                    float side_weight = (fabs(relative_ball_angle) > 10.0f) ? 1.0f : 0.0f;
+                    float side_dir = (relative_ball_angle > 0) ? (line_dir + 90.0f) : (line_dir - 90.0f);
+                    vx += sin(side_dir * PI / 180.0f) * side_weight;
+                    vy += cos(side_dir * PI / 180.0f) * side_weight;
+                }
+            } 
+            else {
+                // ラインを見失った時のバックアップ（50ms以上検知なし時）
+                vx = 0.0f;
+                vy = -0.7f;
+            }
+
+            // --- 3. シュート＆リカバリーロジック（上書き） ---
+            
+            // シュート判定（緩いライン判定を使用）
+            if (is_stable_on_line && filted_IR_distance >= 3500 && fabs(filted_IR_angle) <= 60.0f) {
+                if (kp_front_start_time == 0) kp_front_start_time = millis();
+                if (millis() - kp_front_start_time > 1000) {
+                    kp_is_charging = true; 
+                }
+            } else {
+                kp_front_start_time = 0;
+                kp_is_charging = false;
+            }
+
+            if (kp_is_charging) {
+                vx = 0.0f; vy = 1.0f; // 強速前進
+                kp_is_recovering = true; 
+            } 
+            else if (kp_is_recovering) {
+                if (kp_recovery_start_time == 0) kp_recovery_start_time = millis();
+                
+                // 終了条件：ラインに触れる(即時) or 1秒経過
+                if (!isnan(line_dir) || (millis() - kp_recovery_start_time > 1000)) {
+                    kp_is_recovering = false;
+                    kp_recovery_start_time = 0;
+                } else {
+                    vx = 0.0f; vy = -1.0f; // 強速後退
+                }
+            }
+
+            // --- 移動実行 ---
+            float final_spd = sqrt(vx * vx + vy * vy);
+            if (final_spd > 0.05f) {
+                float final_angle = atan2(vx, vy) * 180.0f / PI;
+                float move_spd = constrain(final_spd, 0.0f, 1.0f);
+                Mmove_with_spin(final_angle, move_spd, sisei_output);
+            } else {
+                Mspin(sisei_output);
+            }
+
+        } break;
+        
+        /* --キックなしのきーぱー-- */
+        case 2: {
+            float vx = 0.0f;
             float vy = 0.0f;
 
             // 1. ライン方向の取得
@@ -650,40 +741,32 @@ void loop() {
             
             // 2. ライン検知時の処理
             if (!isnan(line_dir)) {
-                // --- A. ライン復帰ベクトル ---
-                float line_weight = 0.5f;
-                vx += sin(line_dir * PI / 180.0f) * line_weight;
-                vy += cos(line_dir * PI / 180.0f) * line_weight;
+              // --- A. ライン復帰ベクトル ---
+              // line_dirに向かって進む（＝ラインの重心へ向かう＝コート内側へ戻る）
+              float line_weight = 0.5f;
+              vx += sin(line_dir * PI / 180.0f) * line_weight;
+              vy += cos(line_dir * PI / 180.0f) * line_weight;
 
-                // --- B. ライン並行移動ベクトル ---
-                if (!isnan(filted_IR_angle)) {
-                    // ライン方向を基準にしたボールの相対角度
-                    float relative_ball_angle = normalize_angle(filted_IR_angle - line_dir);
-                    
-                    // 【追加】不感帯：ボールが正面(ライン垂直線上)付近なら横移動しない
-                    float side_weight = 0.0f;
-                    if (fabs(relative_ball_angle) > 15.0f) { // 15度以上のズレで反応
-                        side_weight = 1.0f;
-                    }
-
-                    float side_dir = (relative_ball_angle > 0) ? (line_dir + 90.0f) : (line_dir - 90.0f);
-                    
-                    vx += sin(side_dir * PI / 180.0f) * side_weight;
-                    vy += cos(side_dir * PI / 180.0f) * side_weight;
+              // --- B. ライン並行移動ベクトル ---
+              if (!isnan(filted_IR_angle)) {
+                float relative_ball_angle = normalize_angle(filted_IR_angle - line_dir);
+                float side_weight = 0.0f;
+                if (fabs(relative_ball_angle) > 15.0f) {
+                  side_weight = 1.0f; // 15度以上のズレで横移動開始
                 }
+
+                // ラインに対して垂直（横）に移動する方向
+                float side_dir = (relative_ball_angle > 0) ? (line_dir + 90.0f) : (line_dir - 90.0f);
+            
+                vx += sin(side_dir * PI / 180.0f) * side_weight;
+                vy += cos(side_dir * PI / 180.0f) * side_weight;
+              }
             } 
-            // 3. ライン消失時：直近100ms以内なら、その場に留まる or 前回の慣性で動く
-            else if (!isnan(last_valid_line_dir) && (millis() - last_line_time < 100)) {
-                // ライン復帰ベクトルのみ、最後に見たラインの方向へ弱く出し続ける
-                float hold_weight = 0.4f;
-                vx = sin(last_valid_line_dir * PI / 180.0f) * hold_weight;
-                vy = cos(last_valid_line_dir * PI / 180.0f) * hold_weight;
-            }
-            // 4. 完全にラインを見失った時
             else {
-                vx = 0.0f;
-                vy = -0.5f; // ゆっくり後退してラインを探す
-            }
+              // --- 2. 完全にラインを見失った時（50ms経過後） ---
+              vx = 0.0f;
+              vy = -0.8f; // ゆっくり後退してラインを探す
+          }
 
             // --- 移動実行 ---
             float final_spd = sqrt(vx * vx + vy * vy);
@@ -698,36 +781,6 @@ void loop() {
                 Mspin(sisei_output);
             }
 
-        } break;
-        
-        /* --ラインセンサーなしの回り込み-- */
-        case 2: {
-
-    float vx = 0.0f;
-    float vy = 0.0f;
-
-    // 1. ボールへ向かうベクトル
-    if (!isnan(filted_IR_angle)) {
-        float ball_rad = mawarikomi(filted_IR_angle) * PI / 180.0f;
-        vx += sin(ball_rad);
-        vy += cos(ball_rad);
-    }
-
-    // 3. 移動実行
-    float final_spd = sqrt(vx * vx + vy * vy);
-    float max_val = 1.0f;
-    if (final_spd > max_val) {
-    vx = (vx / final_spd) * max_val;
-    vy = (vy / final_spd) * max_val;
-    final_spd = max_val;
-    }
-    if (final_spd > 0.1f) {
-        float final_angle = atan2(vx, vy) * 180.0f / PI;
-        float move_spd = (final_spd > 1.0f) ? 1.0f : final_spd;
-        Mmove_with_spin(final_angle, move_spd, sisei_output);
-    } else {
-        Mspin(sisei_output);
-    }
 
         } break;
 
